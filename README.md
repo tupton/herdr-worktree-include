@@ -53,20 +53,20 @@ modify existing worktrees.
 
 ## Project Configuration
 
-Add `.herdr-worktree-include` to the main checkout to select copy mode or use a
-different include file:
+Add `.herdr-worktree-include` to the main checkout to select copy mode or use
+additional include files:
 
 ```ini
 mode=copy
 include_file=.worktreeinclude
-include_file=.config/other-worktree-files
+include_file=.worktreeinclude.local
 ```
 
 Supported settings:
 
 - `mode=symlink` links every selected path to the main checkout. This is the default.
 - `mode=copy` recursively copies every selected path. Source symlinks are preserved rather than followed.
-- `include_file=<path>` reads the given file and includes any entries it contains. Multiple `include_file` configurations are supported, and files are checked in declaration order. Only the first one that exists is read.
+- `include_file=<path>` adds an include file. Every configured file that exists is read in declaration order. Entries from all files are combined, and duplicate paths are processed once in first-seen order. Missing files are ignored, allowing optional local include files. Existing paths that are not readable files are logged and skipped.
 
 If no `include_file` setting is present, the plugin looks for `.worktreeinclude`.
 
@@ -74,7 +74,13 @@ The settings format is intentionally limited. It accepts one `key=value` pair pe
 
 An unsupported key, duplicate `mode`, invalid mode, or invalid include-file path invalidates the configuration. The plugin logs the error, creates nothing, and exits successfully so the Herdr event is not marked as failed.
 
-Both `.herdr-worktree-include` and the selected include file may be committed for team-wide behavior or kept local. To keep the default files local without changing `.gitignore`:
+This allows a committed `.worktreeinclude` to define team-wide entries while an optional `.worktreeinclude.local` adds personal entries. Keep the local file untracked without changing `.gitignore`:
+
+```sh
+printf '%s\n' '.worktreeinclude.local' >> .git/info/exclude
+```
+
+The project configuration may also be kept local. To use the default include file without committing either configuration file:
 
 ```sh
 printf '%s\n' '.herdr-worktree-include' '.worktreeinclude' >> .git/info/exclude

@@ -117,17 +117,22 @@ test_default_symlink() {
   assert_link_target "$WORKTREE/.env" "$REPO/.env"
 }
 
-test_ordered_include_files() {
-  printf 'include_file=.missing\ninclude_file=.first\ninclude_file=.second\n' > "$REPO/.herdr-worktree-include"
-  printf 'first.env\n' > "$REPO/.first"
-  printf 'second.env\n' > "$REPO/.second"
+test_combined_include_files() {
+  printf 'include_file=.missing\ninclude_file=.not-a-file\ninclude_file=.first\ninclude_file=.second\n' > "$REPO/.herdr-worktree-include"
+  mkdir "$REPO/.not-a-file"
+  printf 'first.env\nshared.env\n' > "$REPO/.first"
+  printf 'second.env\nshared.env\n' > "$REPO/.second"
   printf 'first\n' > "$REPO/first.env"
   printf 'second\n' > "$REPO/second.env"
+  printf 'shared\n' > "$REPO/shared.env"
 
   run_plugin
 
   assert_symlink "$WORKTREE/first.env" || return 1
-  assert_missing "$WORKTREE/second.env"
+  assert_symlink "$WORKTREE/second.env" || return 1
+  assert_symlink "$WORKTREE/shared.env" || return 1
+  assert_output_contains "include path is not a readable file: $REPO/.not-a-file" || return 1
+  assert_output_contains "symlink 3, skipped 0"
 }
 
 test_copy_files_directories_and_symlinks() {
@@ -309,7 +314,7 @@ for dependency in git jq bash cp mktemp readlink; do
 done
 
 run_test "default symlink mode" test_default_symlink
-run_test "ordered include files" test_ordered_include_files
+run_test "combined include files" test_combined_include_files
 run_test "copy preserves files, directories, and symlinks" test_copy_files_directories_and_symlinks
 run_test "comments, hashes, normalization, and duplicates" test_comments_hashes_normalization_and_duplicates
 run_test "invalid entries are skipped" test_invalid_entries_are_skipped

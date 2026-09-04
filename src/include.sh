@@ -228,44 +228,38 @@ if [ "${#INCLUDE_FILES[@]}" -eq 0 ]; then
   INCLUDE_FILES+=("$DEFAULT_INCLUDE_FILE")
 fi
 
-INCLUDE_PATH=
-for include_file in "${INCLUDE_FILES[@]}"; do
-  candidate_path=$SOURCE/$include_file
-  if [ -e "$candidate_path" ] || [ -L "$candidate_path" ]; then
-    INCLUDE_PATH=$candidate_path
-    break
-  fi
-done
-
-if [ -z "$INCLUDE_PATH" ]; then
-  exit 0
-fi
-if [ ! -f "$INCLUDE_PATH" ] || [ ! -r "$INCLUDE_PATH" ]; then
-  warn "include path is not a readable file: $INCLUDE_PATH"
-  exit 0
-fi
-
 ENTRIES=()
-include_line_number=0
-while IFS= read -r raw_line || [ -n "$raw_line" ]; do
-  include_line_number=$((include_line_number + 1))
-  trim "$raw_line"
-  line=$TRIMMED
-
-  case "$line" in
-    ""|\#*)
-      continue
-      ;;
-  esac
-
-  if ! normalize_path "$line"; then
-    warn "$INCLUDE_PATH:$include_line_number: invalid path: $line"
+for include_file in "${INCLUDE_FILES[@]}"; do
+  include_path=$SOURCE/$include_file
+  if [ ! -e "$include_path" ] && [ ! -L "$include_path" ]; then
     continue
   fi
-  if ! array_contains "$NORMALIZED_PATH" "${ENTRIES[@]}"; then
-    ENTRIES+=("$NORMALIZED_PATH")
+  if [ ! -f "$include_path" ] || [ ! -r "$include_path" ]; then
+    warn "include path is not a readable file: $include_path"
+    continue
   fi
-done < "$INCLUDE_PATH"
+
+  include_line_number=0
+  while IFS= read -r raw_line || [ -n "$raw_line" ]; do
+    include_line_number=$((include_line_number + 1))
+    trim "$raw_line"
+    line=$TRIMMED
+
+    case "$line" in
+      ""|\#*)
+        continue
+        ;;
+    esac
+
+    if ! normalize_path "$line"; then
+      warn "$include_path:$include_line_number: invalid path: $line"
+      continue
+    fi
+    if ! array_contains "$NORMALIZED_PATH" "${ENTRIES[@]}"; then
+      ENTRIES+=("$NORMALIZED_PATH")
+    fi
+  done < "$include_path"
+done
 
 if [ "${#ENTRIES[@]}" -eq 0 ]; then
   exit 0
