@@ -70,11 +70,11 @@ Supported settings:
 
 If no `include_file` setting is present, the plugin looks for `.worktreeinclude`.
 
-The settings format is intentionally limited. It accepts one `key=value` pair per line, blank lines, and comments where the first non-whitespace character is `#`. Surrounding whitespace is ignored. Inline comments and quoted values are not interpreted specially.
+The config format is simple `key=value`. Lines that begin with `#` are ignored.
 
-An unsupported key, duplicate `mode`, invalid mode, or invalid include-file path invalidates the configuration. The plugin logs the error, creates nothing, and exits successfully so the Herdr event is not marked as failed.
+An unsupported key, duplicate `mode`, invalid mode, or invalid include-file path is invalid configuration. The plugin logs the error, but otherwise does nothing and does not block the event.
 
-This allows a committed `.worktreeinclude` to define team-wide entries while an optional `.worktreeinclude.local` adds personal entries. Keep the local file untracked without changing `.gitignore`:
+Multiple `include_file` entries are allowe.d This enables a committed `.worktreeinclude` to define team-wide entries while an optional `.worktreeinclude.local` adds personal entries. Keep the local file untracked without changing `.gitignore` by adding it to your local exclude config:
 
 ```sh
 printf '%s\n' '.worktreeinclude.local' >> .git/info/exclude
@@ -111,7 +111,7 @@ Source paths and their parents may be symlinks, including links that resolve out
 
 ## Safety
 
-Worktree Include never replaces an existing destination file, directory, or symlink. It also refuses to traverse a destination parent that is a symlink or not a directory.
+The include script attempts to never replace an existing destination file, directory, or symlink. It also refuses to traverse a destination parent that is a symlink or not a directory.
 
 Before creating each destination, the plugin compares the selected path with `git ls-files`. It skips the entry if:
 
@@ -119,9 +119,9 @@ Before creating each destination, the plugin compares the selected path with `gi
 - A tracked path is below the selected path.
 - A tracked file or symlink is an ancestor of the selected path.
 
-The Git index is authoritative, so tracked paths remain protected when they are absent from disk, including in sparse checkouts.
+The git index is authoritative, so tracked paths remain protected when they are absent from disk, including in sparse checkouts.
 
-Copy failures may leave a partial destination behind. The plugin does not remove it because it may have been created or replaced concurrently by another process. Remove an incomplete destination before retrying; other invalid or conflicting entries do not prevent safe entries from being processed.
+Copy failures may leave a partial destination behind. The plugin does not remove or otherwise clean up failed destinations because it may have been created or replaced concurrently by another process. Remove an incomplete destination before retrying. Other invalid or conflicting entries do not prevent safe entries from being processed.
 
 ## Testing
 
