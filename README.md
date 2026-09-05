@@ -1,12 +1,12 @@
 # Herdr Worktree Include
 
-Herdr Worktree Include is a [Herdr](https://herdr.dev) plugin that symlinks or copies selected files and directories from a repository's main checkout into Herdr-created worktrees.
+Herdr Worktree Include is a [Herdr](https://herdr.dev) plugin that symlinks or copies selected files and directories from a repository's main checkout into worktrees created by Herdr.
 
-It is intended for local, git-ignored state that should be available in a
-new worktree without being committed, such as environment files, local tool
-configuration, and caches.
+Use it for local, git-ignored files that should be available in a new worktree
+without being committed, such as environment files, local tool configuration,
+and caches.
 
-See [Claude Code's documentation about how to copy gitignored files into worktrees](https://code.claude.com/docs/en/worktrees#copy-gitignored-files-into-worktrees) for inspiration and more details.
+See [Claude Code's documentation about copying gitignored files into worktrees][cc-worktreeinclude] for background and more details.
 
 ## Requirements
 
@@ -30,7 +30,7 @@ Or link a local checkout while developing the plugin:
 herdr plugin link /path/to/herdr-worktree-include
 ```
 
-## Quick Start
+## Quick start
 
 Create `.worktreeinclude` in the main checkout with one repository-relative
 path per line:
@@ -48,10 +48,10 @@ creates links at the corresponding paths:
 new-worktree/.env -> main-checkout/.env
 ```
 
-The plugin only handles worktrees created after it is installed. It does not
+The plugin handles only worktrees created after installation. It does not
 modify existing worktrees.
 
-## Project Configuration
+## Project configuration
 
 Add `.herdr-worktree-include` to the main checkout to select copy mode or use
 additional include files:
@@ -62,33 +62,46 @@ include_file=.worktreeinclude
 include_file=.worktreeinclude.local
 ```
 
-Supported settings:
+### Supported settings
 
-- `mode=symlink` links every selected path to the main checkout. This is the default.
-- `mode=copy` recursively copies every selected path. Source symlinks are preserved rather than followed.
-- `include_file=<path>` adds an include file. Every configured file that exists is read in declaration order. Entries from all files are combined, and duplicate paths are processed once in first-seen order. Missing files are ignored, allowing optional local include files. Existing paths that are not readable files are logged and skipped.
+#### mode
+
+`mode=symlink` links every selected path to the main checkout. This is the default.
+
+`mode=copy` recursively copies every selected path. Source symlinks are preserved rather than followed.
+
+#### `include_file`
+
+`include_file=<path>` adds an include file. The plugin reads existing files in declaration order, combines their entries, and removes duplicates. It ignores missing files, so local include files can be optional. It logs and skips existing paths that are not readable files.
 
 If no `include_file` setting is present, the plugin looks for `.worktreeinclude`.
 
+> [!NOTE]
+>
+> [Claude Code also uses `.worktreeinclude`][cc-worktreeinclude]. The config for this plugin _does not_ use full `gitignore` syntax. It is a simple list of paths, with no support for globs. See [Include File Format](#include-file-format) below.
+
+[cc-worktreeinclude]: https://code.claude.com/docs/en/worktrees#copy-gitignored-files-into-worktrees
+
 The config format is simple `key=value`. Lines that begin with `#` are ignored.
 
-An unsupported key, duplicate `mode`, invalid mode, or invalid include-file path is invalid configuration. The plugin logs the error, but otherwise does nothing and does not block the event.
+An unsupported key, duplicate `mode`, invalid mode, or invalid include-file path is invalid configuration. The plugin logs the error, but otherwise does nothing and does not block creation of the worktree.
 
-Multiple `include_file` entries are allowe.d This enables a committed `.worktreeinclude` to define team-wide entries while an optional `.worktreeinclude.local` adds personal entries. Keep the local file untracked without changing `.gitignore` by adding it to your local exclude config:
+Multiple `include_file` entries are allowed. This enables a committed `.worktreeinclude` to define project-wide entries while an optional `.worktreeinclude.local` adds personal entries. Keep the local file untracked without changing `.gitignore` by adding it to your local exclude config:
 
 ```sh
-printf '%s\n' '.worktreeinclude.local' >> .git/info/exclude
+echo '.worktreeinclude.local' >> .git/info/exclude
 ```
 
 The project configuration may also be kept local. To use the default include file without committing either configuration file:
 
 ```sh
-printf '%s\n' '.herdr-worktree-include' '.worktreeinclude' >> .git/info/exclude
+echo '.herdr-worktree-include'  >> .git/info/exclude
+echo '.worktreeinclude' >> .git/info/exclude
 ```
 
-## Include File Format
+## Include file format
 
-Include files accept one literal repository-relative path per line:
+Include files accept one literal repository-relative path per line. Glob patterns, negation, and other `gitignore`-style syntax is _not_ supported.
 
 ```text
 # Local environment
@@ -102,16 +115,16 @@ Include files accept one literal repository-relative path per line:
 - Blank lines and full-line `#` comments are ignored.
 - `#` elsewhere in a line is part of the path.
 - Glob patterns and negation are not supported.
-- Duplicate paths are processed once, in first-seen order.
+- Duplicate paths are processed once.
 - Empty and `.` path components are normalized.
 - Absolute paths, `..` components, `.git`, and paths below `.git` are rejected.
-- Missing sources and invalid entries are logged and skipped independently.
+- Missing files and paths and invalid entries are logged and skipped independently.
 
-Source paths and their parents may be symlinks, including links that resolve outside the main checkout. Review local include files before using them.
+Source paths may be symlinks, including links that resolve outside the main checkout. Review local include files before using them.
 
 ## Safety
 
-The include script attempts to never replace an existing destination file, directory, or symlink. It also refuses to traverse a destination parent that is a symlink or not a directory.
+The include script avoids replacing an existing destination file, directory, or symlink. It also refuses to traverse a destination parent that is a symlink or not a directory.
 
 Before creating each destination, the plugin compares the selected path with `git ls-files`. It skips the entry if:
 
@@ -119,13 +132,13 @@ Before creating each destination, the plugin compares the selected path with `gi
 - A tracked path is below the selected path.
 - A tracked file or symlink is an ancestor of the selected path.
 
-The git index is authoritative, so tracked paths remain protected when they are absent from disk, including in sparse checkouts.
+The plugin checks the Git index, so tracked paths remain protected even when they are absent from disk, including in sparse checkouts.
 
 Copy failures may leave a partial destination behind. The plugin does not remove or otherwise clean up failed destinations because it may have been created or replaced concurrently by another process. Remove an incomplete destination before retrying. Other invalid or conflicting entries do not prevent safe entries from being processed.
 
 ## Testing
 
-The same dependencies are required to run the integration suite, so ensure that `jq` is on the path. Run the integration suite with:
+The integration suite needs the same dependencies as the plugin, including `jq` on your path. Run it with:
 
 ```sh
 bash tests/integration.sh
@@ -141,7 +154,7 @@ shellcheck --shell=bash src/include.sh tests/integration.sh
 
 ## Attribution
 
-This independent plugin was inspired by [hmu332233/herdr-symlink-worktree](https://github.com/hmu332233/herdr-symlink-worktree), an MIT-licensed Bash plugin for linking local files into Herdr worktrees.
+This plugin was inspired by [hmu332233/herdr-symlink-worktree](https://github.com/hmu332233/herdr-symlink-worktree), an MIT-licensed Bash plugin for linking local files into Herdr worktrees.
 
 ## License
 
