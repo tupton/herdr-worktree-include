@@ -122,12 +122,7 @@ has_unsafe_destination_parent() {
   return 1
 }
 
-# Bash 5 or newer is required for mapfile, associative arrays, and safe empty
-# array expansion under `set -u`. Herdr invokes this as `bash src/include.sh`,
-# a PATH lookup, so on macOS it can resolve to the stock /bin/bash 3.2. Degrade
-# the way every other precondition here does: warn, and let worktree creation
-# succeed. This check must stay parseable by old Bash, so keep 5.x-only syntax
-# out of it.
+# Bash 5 or newer is required.
 if [ "${BASH_VERSINFO[0]:-0}" -lt 5 ]; then
   warn "Bash 5 or newer is required, found ${BASH_VERSION:-unknown}, skipping"
   exit 0
