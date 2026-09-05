@@ -54,3 +54,36 @@ jobs:
       - name: Integration tests
         run: |
           "$BASH_BIN" tests/integration.sh
+
+  # The interpreter floor is the one thing Bash 5 costs us, so assert the
+  # degradation explicitly: stock macOS /bin/bash must skip cleanly rather
+  # than fail the worktree.created event.
+  guard:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stock Bash skips gracefully
+        run: |
+          /bin/bash --version | head -1
+
+          set +e
+          output=$(HERDR_PLUGIN_EVENT_JSON='{}' /bin/bash src/include.sh 2>&1)
+          status=$?
+          set -e
+
+          printf 'exit=%s\n' "$status"
+          printf '%s\n' "$output"
+
+          if [ "$status" -ne 0 ]; then
+            echo "::error::expected exit 0, got $status"
+            exit 1
+          fi
+
+          case "$output" in
+            *"Bash 5 or newer is required"*) ;;
+            *)
+              echo "::error::expected the interpreter guard warning"
+              exit 1
+              ;;
+          esac

@@ -12,7 +12,7 @@ See [Claude Code's documentation about how to copy gitignored files into worktre
 
 - Herdr 0.7.0 or later
 - macOS or Linux
-- Bash 3.2 or later
+- Bash 5.0 or later (macOS ships Bash 3.2; install a current Bash with `brew install bash`)
 - Git
 - `jq` available on your path
 
