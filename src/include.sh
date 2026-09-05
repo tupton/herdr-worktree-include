@@ -3,34 +3,27 @@
 # Herdr worktree.created handler. Symlinks or copies selected paths from a
 # repository's main checkout into a newly created worktree.
 #
-# Every failure here is non-fatal by design. The worktree already exists by the
-# time this runs, so the handler warns and exits 0 rather than failing the
-# event. `set -e` is deliberately not used for the same reason: it would turn
-# an unanticipated failure into a silent exit part-way through installing
-# entries, leaving a half-populated worktree and no explanation.
+# Every failure in the script is non-fatal by design so worktree creation
+# can continue unblocked.
 
 set -uo pipefail
 
 PLUGIN_NAME="worktree-include"
 CONFIG_NAME=".herdr-worktree-include"
 DEFAULT_INCLUDE_FILE=".worktreeinclude"
-
-# Script scope only because the EXIT trap has to see it after main returns.
 TRACKED_PATHS_FILE=
 
 warn() {
   printf '%s: %s\n' "$PLUGIN_NAME" "$1" >&2
 }
 
-# Bash 5 or newer is required.
+# Bash 5 or newer is required for mapfile, associative arrays, and safe empty
+# array expansion under `set -u`.
 if [ "${BASH_VERSINFO[0]:-0}" -lt 5 ]; then
   warn "Bash 5 or newer is required, found ${BASH_VERSION:-unknown}, skipping"
   exit 0
 fi
 
-# --- small helpers -----------------------------------------------------------
-
-# Echo $1 without leading or trailing whitespace.
 trim() {
   local text=$1
   text=${text#"${text%%[![:space:]]*}"}
@@ -38,14 +31,10 @@ trim() {
   printf '%s' "$text"
 }
 
-# Echo a repository-relative path with empty and dot components removed.
-# Fails for absolute paths, parent traversal, and Git administrative paths.
 normalize_path() {
   local input=$1
   [[ -z $input || $input == /* ]] && return 1
 
-  # IFS serves twice here: it splits $input on / below, and joins the kept
-  # components back with / at the end.
   local IFS=/
   local -a parts=() kept=()
   local component
@@ -67,9 +56,6 @@ normalize_path() {
   printf '%s' "$normalized"
 }
 
-# Echo each meaningful line of $1: trimmed, with blanks and # comments dropped,
-# every line prefixed by its 1-based number so callers can report positions.
-# Output is NUL-delimited because a path may legally contain a newline.
 meaningful_lines() {
   local file=$1
   local raw line number=0
@@ -84,7 +70,6 @@ meaningful_lines() {
   done <"$file"
 }
 
-# True when $2 is, contains, or is contained by a path in the index listed in $1.
 has_tracked_conflict() {
   local tracked_file=$1 entry=$2
   local tracked
@@ -101,8 +86,6 @@ has_tracked_conflict() {
   return 1
 }
 
-# True when any parent directory of $2 inside worktree $1 already exists as a
-# symlink or as something other than a directory.
 has_unsafe_destination_parent() {
   local worktree=$1 relative_path=$2
   local parent=${relative_path%/*}
@@ -123,10 +106,6 @@ has_unsafe_destination_parent() {
   return 1
 }
 
-# --- phases ------------------------------------------------------------------
-
-# Echo the main checkout and the worktree top level, NUL-delimited.
-# Fails when $1 is not inside a Git worktree.
 resolve_worktree() {
   local path=$1 common top
 
@@ -134,15 +113,10 @@ resolve_worktree() {
   top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || return 1
   [[ -n $common && -n $top ]] || return 1
 
-  # The main checkout is the directory holding the common Git dir. Herdr only
-  # fires this handler on worktree.created, so layouts where that assumption
-  # breaks down (a submodule, whose Git dir lives under .git/modules) are not
-  # reachable here.
+  # The main checkout is the directory holding the common Git dir.
   printf '%s\0%s\0' "${common%/*}" "$top"
 }
 
-# Echo the effective mode followed by each configured include file,
-# NUL-delimited. Echoes nothing and fails when the config file is unusable.
 read_config() {
   local config=$1
   local mode=symlink mode_seen=0 invalid=0
@@ -212,8 +186,6 @@ read_config() {
   printf '%s\0' "$mode" "${include_files[@]}"
 }
 
-# Echo each entry named by the include files $2.. relative to checkout $1,
-# normalized and deduplicated, NUL-delimited.
 collect_entries() {
   local source=$1
   shift
@@ -248,8 +220,6 @@ collect_entries() {
   done
 }
 
-# Install one entry. Succeeds when the entry was linked or copied, fails when
-# it was skipped for any reason; the reason is warned about here.
 install_entry() {
   local mode=$1 source=$2 worktree=$3 tracked_file=$4 entry=$5
   local source_path=$source/$entry
@@ -296,8 +266,6 @@ install_entry() {
   return 0
 }
 
-# --- entry point -------------------------------------------------------------
-
 main() {
   if ! command -v jq >/dev/null 2>&1; then
     warn "jq not found, skipping"
@@ -311,8 +279,6 @@ main() {
     return 0
   fi
 
-  # Two NUL-delimited fields; a short read means resolve_worktree failed. The
-  # exit status of a process substitution is not observable, so count instead.
   local -a resolved=()
   mapfile -d '' -t resolved < <(resolve_worktree "$event_path")
   if ((${#resolved[@]} != 2)); then
