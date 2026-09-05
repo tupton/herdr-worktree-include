@@ -32,13 +32,13 @@ herdr plugin link /path/to/herdr-worktree-include
 
 ## Quick start
 
-Create `.worktreeinclude` in the main checkout with one repository-relative
-path per line:
+Create `.worktreeinclude` in the main checkout using `.gitignore` syntax:
 
 ```text
 .env
-.env.local
-.turbo
+.env.*
+!.env.example
+.turbo/
 ```
 
 The default mode is `symlink`. When Herdr creates a linked worktree, the plugin
@@ -72,13 +72,15 @@ include_file=.worktreeinclude.local
 
 #### `include_file`
 
-`include_file=<path>` adds an include file. The plugin reads existing files in declaration order, combines their entries, and removes duplicates. It ignores missing files, so local include files can be optional. It logs and skips existing paths that are not readable files.
+`include_file=<path>` adds an include file. The plugin reads existing files in declaration order and combines their patterns into one rule set. Later matching patterns override earlier ones, including across files. Duplicate declarations remain significant.
+
+Every include file's patterns are relative to the repository root, even when the include file is in a subdirectory. This matches Git's treatment of files passed with `--exclude-from`.
+
+Missing include files are optional. If an existing include path is not a readable regular file, selection stops and the plugin installs nothing for that worktree.
 
 If no `include_file` setting is present, the plugin looks for `.worktreeinclude`.
 
-> [!NOTE]
->
-> [Claude Code also uses `.worktreeinclude`][cc-worktreeinclude]. The config for this plugin _does not_ use full `gitignore` syntax. It is a simple list of paths, with no support for globs. See [Include File Format](#include-file-format) below.
+By default, `.worktreeinclude` follows [Claude Code's documented selection contract][cc-worktreeinclude]: it uses `.gitignore` syntax and selects only Git-ignored, untracked paths. Transfer behavior differs. This plugin can symlink instead of copying, installs a directly selected directory as one entry, supports multiple include files, and permits selected symlinks.
 
 [cc-worktreeinclude]: https://code.claude.com/docs/en/worktrees#copy-gitignored-files-into-worktrees
 
@@ -101,26 +103,47 @@ echo '.worktreeinclude' >> .git/info/exclude
 
 ## Include file format
 
-Include files accept one literal repository-relative path per line. Glob patterns, negation, and other `gitignore`-style syntax is _not_ supported.
+Include files use [Git's `.gitignore` pattern syntax](https://git-scm.com/docs/gitignore). Git performs the matching.
 
 ```text
-# Local environment
-.env
-.env.local
+# Local environments except the committed example
+.env*
+!.env.example
 
 # Tool state
-.cache/tool
+.cache/**/state.json
+.turbo/
 ```
 
-- Blank lines and full-line `#` comments are ignored.
-- `#` elsewhere in a line is part of the path.
-- Glob patterns and negation are not supported.
-- Duplicate paths are processed once.
-- Empty and `.` path components are normalized.
-- Absolute paths, `..` components, `.git`, and paths below `.git` are rejected.
-- Missing files and paths and invalid entries are logged and skipped independently.
+- Blank lines and unescaped leading `#` characters are comments.
+- `!` negates a previous match. The last matching pattern decides.
+- `*`, `?`, character classes, `**`, root anchoring with `/`, directory-only patterns ending in `/`, and Git's escaping rules are supported.
+- Patterns from all configured include files share one ordered rule set.
+- A selected path is installed only when standard Git ignore rules also ignore it. Standard sources include `.gitignore` files, `.git/info/exclude`, and the user's global excludes file.
+- Tracked paths are never installed.
+- A pattern that matches nothing, or matches only non-ignored paths, produces no warning.
+
+Version 0.4.0 changes the old literal-path behavior. Existing entries still work as literal-looking Git-ignore patterns, but their source paths must now be ignored by Git. For example:
+
+```text
+# .gitignore or .git/info/exclude
+.env
+
+# .worktreeinclude
+.env
+```
+
+Git does not traverse source symlinks. A pattern may select an ignored symlink itself, but a pattern below that symlink does not reach its target.
 
 Source paths may be symlinks, including links that resolve outside the main checkout. Review local include files before using them.
+
+### Directories
+
+When a pattern matches an ignored directory itself, the plugin installs that directory once. In `symlink` mode this creates a live link to the main checkout. Files added below the source directory later appear in the worktree without another eligibility check.
+
+A pattern that matches only descendants does not install their parent directory. If a selected directory is not itself Git-ignored, the plugin expands it and installs only descendants that are both selected and ignored.
+
+The plugin rejects a selected directory as a whole if it contains tracked content or a nested Git repository. It does not fall back to individual descendants in either case.
 
 ## Safety
 
@@ -133,6 +156,10 @@ Before creating each destination, the plugin compares the selected path with `gi
 - A tracked file or symlink is an ancestor of the selected path.
 
 The plugin checks the Git index, so tracked paths remain protected even when they are absent from disk, including in sparse checkouts.
+
+The plugin supports regular files, directories, and symlinks. It warns and skips sockets, FIFOs, devices, and other special source types.
+
+Pattern matching and Git-ignore checks finish before installation starts. If Git cannot evaluate the full rule set, the plugin warns and installs nothing. Once installation starts, one failed entry does not prevent other entries from being processed.
 
 Copy failures may leave a partial destination behind. The plugin does not remove or otherwise clean up failed destinations because it may have been created or replaced concurrently by another process. Remove an incomplete destination before retrying. Other invalid or conflicting entries do not prevent safe entries from being processed.
 

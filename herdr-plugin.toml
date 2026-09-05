@@ -1,6 +1,6 @@
 id = "dev.tupton.worktree-include"
 name = "Worktree Include"
-version = "0.3.0"
+version = "0.4.0"
 min_herdr_version = "0.7.0"
 description = "Copy or symlink selected local files into new worktrees."
 platforms = ["linux", "macos"]
