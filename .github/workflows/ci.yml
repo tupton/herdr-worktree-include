@@ -37,9 +37,6 @@ jobs:
         if: runner.os == 'macOS'
         run: brew list bash >/dev/null 2>&1 || brew install bash
 
-      # Both the harness and the plugin run under an explicitly resolved
-      # interpreter. Relying on PATH would let a runner silently pick the
-      # stock macOS /bin/bash 3.2, which is not what we mean to test here.
       - name: Pin interpreter
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
@@ -55,9 +52,7 @@ jobs:
         run: |
           "$BASH_BIN" tests/integration.sh
 
-  # The interpreter floor is the one thing Bash 5 costs us, so assert the
-  # degradation explicitly: stock macOS /bin/bash must skip cleanly rather
-  # than fail the worktree.created event.
+  # Ensure the Bash 5 floor fails gracefully
   guard:
     runs-on: macos-latest
     steps:
