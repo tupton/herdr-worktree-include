@@ -270,7 +270,10 @@ if [ -z "$TRACKED_PATHS_FILE" ]; then
   warn "could not create a temporary file, skipping"
   exit 0
 fi
-trap 'rm -f "$TRACKED_PATHS_FILE"' EXIT HUP INT TERM
+trap 'rm -f "$TRACKED_PATHS_FILE"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if ! git -C "$WORKTREE" ls-files -z > "$TRACKED_PATHS_FILE"; then
   warn "could not inspect tracked paths, skipping"
