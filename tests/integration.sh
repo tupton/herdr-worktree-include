@@ -4,6 +4,9 @@ set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PLUGIN=$ROOT/src/include.sh
+# Herdr invokes the plugin as `bash src/include.sh`, so PATH lookup is the
+# default. CI overrides this to pin an explicit interpreter.
+PLUGIN_BASH=${PLUGIN_BASH:-bash}
 TEST_ROOT=
 passed=0
 failed=0
@@ -88,7 +91,7 @@ teardown_repo() {
 }
 
 run_plugin() {
-  OUTPUT=$(HERDR_PLUGIN_EVENT_JSON="$EVENT_JSON" bash "$PLUGIN" 2>&1)
+  OUTPUT=$(HERDR_PLUGIN_EVENT_JSON="$EVENT_JSON" "$PLUGIN_BASH" "$PLUGIN" 2>&1)
   STATUS=$?
   return 0
 }

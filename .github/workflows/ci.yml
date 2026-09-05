@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck version
+        run: shellcheck --version
+
+      - name: Lint
+        run: shellcheck --shell=bash src/include.sh tests/integration.sh
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bash (macOS)
+        if: runner.os == 'macOS'
+        run: brew list bash >/dev/null 2>&1 || brew install bash
+
+      # Both the harness and the plugin run under an explicitly resolved
+      # interpreter. Relying on PATH would let a runner silently pick the
+      # stock macOS /bin/bash 3.2, which is not what we mean to test here.
+      - name: Pin interpreter
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            bash_bin="$(brew --prefix)/bin/bash"
+          else
+            bash_bin=/bin/bash
+          fi
+          "$bash_bin" --version | head -1
+          echo "BASH_BIN=$bash_bin" >> "$GITHUB_ENV"
+          echo "PLUGIN_BASH=$bash_bin" >> "$GITHUB_ENV"
+
+      - name: Integration tests
+        run: |
+          "$BASH_BIN" tests/integration.sh
