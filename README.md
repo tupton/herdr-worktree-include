@@ -67,7 +67,7 @@ include_file=.worktreeinclude.local
 
 ### Supported settings
 
-#### mode
+#### `mode`
 
 `mode=symlink` links every selected path to the main checkout. This is the default.
 
@@ -103,6 +103,10 @@ The project configuration may also be kept local. To use the default include fil
 echo '.herdr-worktree-include'  >> .git/info/exclude
 echo '.worktreeinclude' >> .git/info/exclude
 ```
+
+> [!WARN]
+>
+> A broad pattern (`*`, `.*`) in an untracked include file also matches that include file itself. In symlink mode this makes the include file a symlink into the main checkout, so editing it from inside a worktree changes it for every worktree.
 
 ## Include file format
 

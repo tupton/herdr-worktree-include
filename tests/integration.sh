@@ -177,6 +177,15 @@ test_include_files_are_root_relative() {
   assert_missing "$WORKTREE/nested/root.env"
 }
 
+test_include_file_can_select_itself() {
+  printf 'include_file=.worktreeinclude.local\n' > "$REPO/.herdr-worktree-include"
+  printf '*\n' > "$REPO/.worktreeinclude.local"
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/.worktreeinclude.local"
+}
+
 test_non_ignored_match_is_skipped() {
   printf '.env\n' > "$REPO/.worktreeinclude"
   printf 'secret\n' > "$REPO/.env"
@@ -651,6 +660,7 @@ run_test "combined include files" test_combined_include_files
 run_test "include files use last match" test_include_files_use_last_match
 run_test "duplicate include declarations are significant" test_duplicate_include_declarations_are_significant
 run_test "include files are root relative" test_include_files_are_root_relative
+run_test "include file can select itself" test_include_file_can_select_itself
 run_test "non-ignored matches are skipped" test_non_ignored_match_is_skipped
 run_test "standard gitignore sources are used" test_standard_gitignore_sources_are_used
 run_test "global gitignore source is used" test_global_gitignore_source_is_used
