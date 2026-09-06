@@ -8,6 +8,7 @@ PLUGIN=$ROOT/src/include.sh
 # default. CI overrides this to pin an explicit interpreter.
 PLUGIN_BASH=${PLUGIN_BASH:-bash}
 TEST_ROOT=
+DIAGNOSTICS_FILE=
 passed=0
 failed=0
 
@@ -65,6 +66,12 @@ assert_output_contains() {
   esac
 }
 
+assert_diagnostic() {
+  local expression=$1 expected=$2 actual
+  actual=$(jq -r "$expression" "$DIAGNOSTICS_FILE") || return 1
+  [ "$actual" = "$expected" ] || fail "expected diagnostic $expression to be '$expected', got '$actual'"
+}
+
 setup_repo() {
   TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/worktree-include-test.XXXXXX") || return 1
   REPO=$TEST_ROOT/repo
@@ -92,7 +99,13 @@ teardown_repo() {
 }
 
 run_plugin() {
-  OUTPUT=$(HERDR_PLUGIN_EVENT_JSON="$EVENT_JSON" "$PLUGIN_BASH" "$PLUGIN" 2>&1)
+  if [ -n "$DIAGNOSTICS_FILE" ]; then
+    OUTPUT=$(HERDR_WORKTREE_INCLUDE_FORCE_WHOLE_TREE="${FORCE_WHOLE_TREE:-0}" \
+      HERDR_WORKTREE_INCLUDE_DIAGNOSTICS="$DIAGNOSTICS_FILE" \
+      HERDR_PLUGIN_EVENT_JSON="$EVENT_JSON" "$PLUGIN_BASH" "$PLUGIN" 2>&1)
+  else
+    OUTPUT=$(HERDR_PLUGIN_EVENT_JSON="$EVENT_JSON" "$PLUGIN_BASH" "$PLUGIN" 2>&1)
+  fi
   STATUS=$?
   return 0
 }
@@ -100,6 +113,11 @@ run_plugin() {
 run_test() {
   name=$1
   shift
+
+  if [ -n "${TEST_FILTER:-}" ] && [[ $name != *"$TEST_FILTER"* ]]; then
+    return 0
+  fi
+
   printf 'TEST %s\n' "$name"
 
   if setup_repo && "$@"; then
@@ -111,6 +129,94 @@ run_test() {
   fi
 
   teardown_repo
+}
+
+test_rooted_literal_uses_literal_plan() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/src/django"
+  printf 'secret\n' > "$REPO/src/django/.env"
+  printf 'src/django/.env\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/src/django/.env" || return 1
+  assert_diagnostic '.plan.tier' rooted-literal || return 1
+  assert_diagnostic '.plan.roots | join(",")' src/django/.env || return 1
+  assert_diagnostic '.commands.discovery_directories' 0 || return 1
+  assert_diagnostic '.commands.special_find' 0
+}
+
+test_rooted_prefix_scopes_discovery() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/src/app" "$REPO/unrelated/deep"
+  printf 'root\n' > "$REPO/src/root.env"
+  printf 'nested\n' > "$REPO/src/app/nested.env"
+  printf 'outside\n' > "$REPO/unrelated/deep/outside.env"
+  printf 'src/**/*.env\nsrc/*.env\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/src/root.env" || return 1
+  assert_symlink "$WORKTREE/src/app/nested.env" || return 1
+  assert_missing "$WORKTREE/unrelated/deep/outside.env" || return 1
+  assert_diagnostic '.plan.tier' rooted-prefix || return 1
+  assert_diagnostic '.plan.roots | join(",")' src || return 1
+  assert_diagnostic '.commands.discovery_directories' 1
+}
+
+test_slashless_pattern_uses_whole_tree_plan() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/nested"
+  printf 'root\n' > "$REPO/root.env"
+  printf 'nested\n' > "$REPO/nested/local.env"
+  printf '*.env\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/root.env" || return 1
+  assert_symlink "$WORKTREE/nested/local.env" || return 1
+  assert_diagnostic '.plan.tier' whole-tree || return 1
+  assert_diagnostic '.plan.roots | length' 0 || return 1
+  assert_diagnostic '.commands.discovery_directories' 1 || return 1
+  assert_diagnostic '.commands.special_find' 1
+}
+
+test_negation_does_not_broaden_literal_plan() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/src"
+  printf 'secret\n' > "$REPO/src/local.env"
+  printf 'example\n' > "$REPO/src/example.env"
+  printf 'src/local.env\n!**/example.env\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/src/local.env" || return 1
+  assert_missing "$WORKTREE/src/example.env" || return 1
+  assert_diagnostic '.plan.tier' rooted-literal || return 1
+  assert_diagnostic '.plan.roots | join(",")' src/local.env
+}
+
+test_many_entries_use_batched_safety_checks() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/config"
+  for number in 1 2 3 4 5; do
+    printf 'value %s\n' "$number" > "$REPO/config/$number.env"
+    printf 'config/%s.env\n' "$number" >> "$REPO/.worktreeinclude"
+  done
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  for number in 1 2 3 4 5; do
+    assert_symlink "$WORKTREE/config/$number.env" || return 1
+  done
+  assert_diagnostic '.commands.standard_ignores' 1 || return 1
+  assert_diagnostic '.commands.source_index_snapshots' 2 || return 1
+  assert_diagnostic '.commands.destination_index_snapshots' 2
 }
 
 test_default_symlink() {
@@ -575,18 +681,178 @@ test_source_tracked_conflict_is_rechecked_before_install() {
   printf 'local\n' > "$REPO/race.env"
   mkdir "$TEST_ROOT/bin"
   real_git=$(command -v git)
-  # Track the selected source path after selection and before installation.
+  # Track the selected source path after the initial source snapshot has been
+  # emitted, so only the fresh pre-install snapshot can observe the change.
   # shellcheck disable=SC2016
-  printf '#!/usr/bin/env bash\n"$REAL_GIT" "$@"\nstatus=$?\ncase " $* " in\n  *" check-ignore "*) "$REAL_GIT" -C "$REPO" add -f race.env ;;\nesac\nexit "$status"\n' > "$TEST_ROOT/bin/git"
+  printf '#!/usr/bin/env bash\n"$REAL_GIT" "$@"\nstatus=$?\nif [ "$#" -eq 4 ] && [ "$1" = -C ] && [ "$2" = "$REPO" ] && [ "$3" = ls-files ] && [ "$4" = -z ] && [ ! -e "$STATE" ]; then\n  : > "$STATE"\n  "$REAL_GIT" -C "$REPO" add -f race.env\nfi\nexit "$status"\n' > "$TEST_ROOT/bin/git"
   chmod +x "$TEST_ROOT/bin/git"
 
-  OUTPUT=$(REPO="$REPO" REAL_GIT="$real_git" PATH="$TEST_ROOT/bin:$PATH" \
-    HERDR_PLUGIN_EVENT_JSON="$EVENT_JSON" bash "$PLUGIN" 2>&1)
+  OUTPUT=$(REPO="$REPO" STATE="$TEST_ROOT/source-snapshot-seen" REAL_GIT="$real_git" \
+    PATH="$TEST_ROOT/bin:$PATH" HERDR_PLUGIN_EVENT_JSON="$EVENT_JSON" \
+    "$PLUGIN_BASH" "$PLUGIN" 2>&1)
   STATUS=$?
 
   [ "$STATUS" -eq 0 ] || fail "plugin exited $STATUS"
   assert_missing "$WORKTREE/race.env" || return 1
   assert_output_contains "tracked path conflict: race.env"
+}
+
+test_destination_tracked_conflict_is_rechecked_before_install() {
+  printf 'race.env\n' > "$REPO/.worktreeinclude"
+  printf 'local\n' > "$REPO/race.env"
+  mkdir "$TEST_ROOT/bin"
+  real_git=$(command -v git)
+  blob=$(printf 'destination race\n' | git -C "$WORKTREE" hash-object -w --stdin)
+  # Add an index-only destination entry after the initial destination snapshot.
+  # shellcheck disable=SC2016
+  printf '#!/usr/bin/env bash\n"$REAL_GIT" "$@"\nstatus=$?\nif [ "$#" -eq 4 ] && [ "$1" = -C ] && [ "$2" = "$WORKTREE" ] && [ "$3" = ls-files ] && [ "$4" = -z ] && [ ! -e "$STATE" ]; then\n  : > "$STATE"\n  "$REAL_GIT" -C "$WORKTREE" update-index --add --cacheinfo "100644,$BLOB,race.env"\nfi\nexit "$status"\n' > "$TEST_ROOT/bin/git"
+  chmod +x "$TEST_ROOT/bin/git"
+
+  OUTPUT=$(WORKTREE="$WORKTREE" BLOB="$blob" STATE="$TEST_ROOT/destination-snapshot-seen" \
+    REAL_GIT="$real_git" PATH="$TEST_ROOT/bin:$PATH" HERDR_PLUGIN_EVENT_JSON="$EVENT_JSON" \
+    "$PLUGIN_BASH" "$PLUGIN" 2>&1)
+  STATUS=$?
+
+  [ "$STATUS" -eq 0 ] || fail "plugin exited $STATUS"
+  assert_missing "$WORKTREE/race.env" || return 1
+  assert_output_contains "tracked path conflict: race.env"
+}
+
+test_ordinary_directory_tree_needs_no_repository_validation() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/cache/one/two/three"
+  printf 'value\n' > "$REPO/cache/one/two/three/value"
+  printf '/cache/\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/cache" || return 1
+  assert_diagnostic '.commands.repository_validations' 0
+}
+
+test_invalid_git_marker_is_not_a_repository() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/cache"
+  printf 'not a gitfile\n' > "$REPO/cache/.git"
+  printf 'value\n' > "$REPO/cache/value"
+  printf '/cache/\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/cache" || return 1
+  assert_diagnostic '.commands.repository_validations' 1
+}
+
+test_rooted_literal_special_file_avoids_recursive_find() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/runtime"
+  mkfifo "$REPO/runtime/pipe"
+  printf '/runtime/pipe\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_missing "$WORKTREE/runtime/pipe" || return 1
+  assert_output_contains "unsupported source type: $REPO/runtime/pipe" || return 1
+  assert_diagnostic '.plan.tier' rooted-literal || return 1
+  assert_diagnostic '.commands.special_find' 0 || return 1
+  assert_diagnostic '.commands.special_match' 1
+}
+
+test_rooted_prefix_does_not_inspect_unrelated_special_file() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/runtime" "$REPO/unrelated"
+  printf 'secret\n' > "$REPO/runtime/local.env"
+  mkfifo "$REPO/unrelated/pipe"
+  printf '/runtime/*.env\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/runtime/local.env" || return 1
+  [[ $OUTPUT != *"unrelated/pipe"* ]] || fail "unexpected warning for unrelated special file" || return 1
+  assert_diagnostic '.commands.special_find' 1 || return 1
+  assert_diagnostic '.commands.special_match' 0
+}
+
+test_uncertain_patterns_fall_back() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/src"
+  printf 'value\n' > "$REPO/src/a.env"
+  printf '/src/[a\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_diagnostic '.plan.tier' whole-tree
+}
+
+test_case_insensitive_selection_falls_back() {
+  git -C "$REPO" config core.ignoreCase true
+  mkdir -p "$REPO/Source"
+  printf 'value\n' > "$REPO/Source/local.env"
+  printf '/source/local.env\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_diagnostic '.plan.tier' whole-tree
+}
+
+test_forced_fallback_matches_rooted_prefix_result() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/src/nested"
+  printf 'root\n' > "$REPO/src/root.env"
+  printf 'nested\n' > "$REPO/src/nested/local.env"
+  printf 'skip\n' > "$REPO/src/nested/local.txt"
+  printf '/src/**/*.env\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/planned.json
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/src/root.env" || return 1
+  assert_symlink "$WORKTREE/src/nested/local.env" || return 1
+  rm "$WORKTREE/src/root.env" "$WORKTREE/src/nested/local.env"
+  rmdir "$WORKTREE/src/nested" "$WORKTREE/src"
+  FORCE_WHOLE_TREE=1
+  DIAGNOSTICS_FILE=$TEST_ROOT/fallback.json
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/src/root.env" || return 1
+  assert_symlink "$WORKTREE/src/nested/local.env" || return 1
+  actual=$(jq -r '.plan.tier' "$DIAGNOSTICS_FILE") || return 1
+  [ "$actual" = whole-tree ] || fail "expected forced whole-tree plan, got $actual"
+}
+
+test_only_negations_skip_discovery() {
+  git -C "$REPO" config core.ignoreCase false
+  printf 'secret\n' > "$REPO/local.env"
+  printf '!*.env\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_missing "$WORKTREE/local.env" || return 1
+  assert_diagnostic '.plan.tier' rooted-literal || return 1
+  assert_diagnostic '.commands.discovery_leaves' 0 || return 1
+  assert_diagnostic '.commands.discovery_directories' 0
+}
+
+test_escaped_literal_metacharacter_uses_literal_plan() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/src"
+  printf 'literal\n' > "$REPO/src/*.env"
+  printf '/src/\\*.env\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/src/*.env" || return 1
+  assert_diagnostic '.plan.tier' rooted-literal || return 1
+  assert_diagnostic '.plan.roots | join(",")' 'src/*.env'
 }
 
 test_tracked_path_absent_from_disk() {
@@ -663,7 +929,7 @@ test_copy_failure_preserves_partial_destination() {
   assert_output_contains "partial destination may remain"
 }
 
-for dependency in git jq bash cp mktemp readlink; do
+for dependency in git jq bash cp mktemp readlink mkfifo; do
   if ! command -v "$dependency" >/dev/null 2>&1; then
     printf 'missing test dependency: %s\n' "$dependency" >&2
     exit 1
@@ -671,6 +937,11 @@ for dependency in git jq bash cp mktemp readlink; do
 done
 
 run_test "default symlink mode" test_default_symlink
+run_test "rooted literal uses literal plan" test_rooted_literal_uses_literal_plan
+run_test "rooted prefix scopes discovery" test_rooted_prefix_scopes_discovery
+run_test "slashless pattern uses whole tree plan" test_slashless_pattern_uses_whole_tree_plan
+run_test "negation does not broaden literal plan" test_negation_does_not_broaden_literal_plan
+run_test "many entries use batched safety checks" test_many_entries_use_batched_safety_checks
 run_test "combined include files" test_combined_include_files
 run_test "include files use last match" test_include_files_use_last_match
 run_test "duplicate include declarations are significant" test_duplicate_include_declarations_are_significant
@@ -705,6 +976,16 @@ run_test "tracked directories are not ancestor conflicts" test_tracked_directory
 run_test "source-only tracked ancestor conflict" test_source_only_tracked_ancestor_conflict
 run_test "case-insensitive tracked conflict" test_case_insensitive_tracked_conflict
 run_test "source tracked conflicts are rechecked before install" test_source_tracked_conflict_is_rechecked_before_install
+run_test "destination tracked conflicts are rechecked before install" test_destination_tracked_conflict_is_rechecked_before_install
+run_test "ordinary directory trees need no repository validation" test_ordinary_directory_tree_needs_no_repository_validation
+run_test "invalid git markers are not repositories" test_invalid_git_marker_is_not_a_repository
+run_test "rooted literal special files avoid recursive find" test_rooted_literal_special_file_avoids_recursive_find
+run_test "rooted prefix does not inspect unrelated special files" test_rooted_prefix_does_not_inspect_unrelated_special_file
+run_test "uncertain patterns fall back" test_uncertain_patterns_fall_back
+run_test "case insensitive selection falls back" test_case_insensitive_selection_falls_back
+run_test "forced fallback matches rooted prefix result" test_forced_fallback_matches_rooted_prefix_result
+run_test "only negations skip discovery" test_only_negations_skip_discovery
+run_test "escaped literal metacharacters use literal plan" test_escaped_literal_metacharacter_uses_literal_plan
 run_test "tracked path absent from disk" test_tracked_path_absent_from_disk
 run_test "existing destination is preserved" test_existing_destination_is_preserved
 run_test "unsafe destination parents are skipped" test_unsafe_destination_parent_is_skipped
