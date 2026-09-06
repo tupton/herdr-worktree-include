@@ -73,7 +73,7 @@ assert_diagnostic() {
 }
 
 installed_entries() {
-  (cd "$WORKTREE" && find . -type l -print0)
+  (cd "$WORKTREE" && find . -type l -print | LC_ALL=C sort)
 }
 
 setup_repo() {
@@ -836,21 +836,34 @@ test_nested_git_component_falls_back() {
 
 test_forced_fallback_matches_rooted_prefix_result() {
   git -C "$REPO" config core.ignoreCase false
-  mkdir -p "$REPO/src/nested"
+  mkdir -p "$REPO/src/nested" "$REPO/src/cache"
   printf 'root\n' > "$REPO/src/root.env"
   printf 'nested\n' > "$REPO/src/nested/local.env"
   printf 'skip\n' > "$REPO/src/nested/local.txt"
-  printf '/src/**/*.env\n' > "$REPO/.worktreeinclude"
+  printf 'cached\n' > "$REPO/src/cache/value"
+  printf 'tracked\n' > "$REPO/src/tracked.env"
+  git -C "$REPO" add -f src/tracked.env
+  git -C "$REPO" commit -qm "Track differential conflict"
+  git -C "$WORKTREE" reset -q --hard "$DEFAULT_BRANCH"
+  ln -s root.env "$REPO/src/root-link"
+  mkfifo "$REPO/src/pipe"
+  printf '/src/**/*.env\n/src/cache/\n/src/root-link\n/src/pipe\n' > "$REPO/.worktreeinclude"
   DIAGNOSTICS_FILE=$TEST_ROOT/planned.json
 
   run_plugin
 
   assert_symlink "$WORKTREE/src/root.env" || return 1
   assert_symlink "$WORKTREE/src/nested/local.env" || return 1
+  assert_symlink "$WORKTREE/src/cache" || return 1
+  assert_symlink "$WORKTREE/src/root-link" || return 1
+  assert_file "$WORKTREE/src/tracked.env" || return 1
+  [ ! -L "$WORKTREE/src/tracked.env" ] || fail "expected tracked file to remain ordinary" || return 1
+  assert_output_contains "unsupported source type: $REPO/src/pipe" || return 1
   installed_entries > "$TEST_ROOT/planned-entries"
   planned_output=$OUTPUT
-  rm "$WORKTREE/src/root.env" "$WORKTREE/src/nested/local.env"
-  rmdir "$WORKTREE/src/nested" "$WORKTREE/src"
+  rm "$WORKTREE/src/root.env" "$WORKTREE/src/nested/local.env" \
+    "$WORKTREE/src/cache" "$WORKTREE/src/root-link"
+  rmdir "$WORKTREE/src/nested"
   FORCE_WHOLE_TREE=1
   DIAGNOSTICS_FILE=$TEST_ROOT/fallback.json
 
@@ -858,6 +871,11 @@ test_forced_fallback_matches_rooted_prefix_result() {
 
   assert_symlink "$WORKTREE/src/root.env" || return 1
   assert_symlink "$WORKTREE/src/nested/local.env" || return 1
+  assert_symlink "$WORKTREE/src/cache" || return 1
+  assert_symlink "$WORKTREE/src/root-link" || return 1
+  assert_file "$WORKTREE/src/tracked.env" || return 1
+  [ ! -L "$WORKTREE/src/tracked.env" ] || fail "expected tracked file to remain ordinary" || return 1
+  assert_output_contains "unsupported source type: $REPO/src/pipe" || return 1
   installed_entries > "$TEST_ROOT/fallback-entries"
   cmp "$TEST_ROOT/planned-entries" "$TEST_ROOT/fallback-entries" || \
     fail "planned and fallback installed different entries" || return 1
