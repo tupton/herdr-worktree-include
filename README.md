@@ -180,6 +180,22 @@ bash tests/integration.sh
 
 The tests create temporary Git repositories and linked worktrees, invoke the event handler directly, and remove the temporary data afterward.
 
+Run one group of integration tests while developing by setting `TEST_FILTER` to part of a test name:
+
+```sh
+TEST_FILTER="rooted literal" bash tests/integration.sh
+```
+
+Set `HERDR_WORKTREE_INCLUDE_DIAGNOSTICS` to a file path to record one invocation's plan tier, scoped roots, command-role counts, candidate counts, inspected-entry counts, and phase timings as JSON:
+
+```sh
+HERDR_WORKTREE_INCLUDE_DIAGNOSTICS=/tmp/worktree-include.json \
+  HERDR_PLUGIN_EVENT_JSON="$event_json" \
+  bash src/include.sh
+```
+
+Diagnostics are disabled by default. They do not contain include-pattern or selected-file contents. `HERDR_WORKTREE_INCLUDE_FORCE_WHOLE_TREE=1` forces fallback discovery for differential tests when diagnostics are enabled.
+
 For static checks, use [ShellCheck](https://www.shellcheck.net/):
 
 ```sh
