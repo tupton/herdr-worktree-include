@@ -41,6 +41,9 @@ Create `.worktreeinclude` in the main checkout using `.gitignore` syntax:
 .turbo/
 ```
 
+The selected paths must also be ignored by Git. Add matching rules to
+`.gitignore`, `.git/info/exclude`, or your global excludes file.
+
 The default mode is `symlink`. When Herdr creates a linked worktree, the plugin
 creates links at the corresponding paths:
 
