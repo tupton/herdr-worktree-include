@@ -320,38 +320,60 @@ is_below_entry() {
   return 1
 }
 
-select_entries() {
-  local source=$1 worktree=$2 source_tracked_file=$3 worktree_tracked_file=$4 output_file=$5
-  shift 5
+# Trims a leading "./" and trailing "/" from each NUL-delimited entry.
+read_null_set() {
+  local file=$1 array_name=$2
+  local -n set_ref=$array_name
+  local path
 
-  local -a include_args=()
-  local include_file
-  for include_file in "$@"; do
-    include_args+=(--exclude-from="$include_file")
-  done
-  ((${#include_args[@]})) || return 0
+  while IFS= read -r -d '' path; do
+    path=${path#./}
+    path=${path%/}
+    # shellcheck disable=SC2034,SC2004 # set_ref is a nameref array target.
+    [[ -n $path ]] && set_ref[$path]=1
+  done <"$file"
+}
 
-  local leaves_file=$TEMP_DIR/include-leaves
-  local collapsed_file=$TEMP_DIR/include-collapsed
-  local selection_index=$TEMP_DIR/selection-index
-  local special_paths_file=$TEMP_DIR/special-paths
-  local special_index_input=$TEMP_DIR/special-index-input
-  local special_index=$TEMP_DIR/special-index
-  local probe_file=$TEMP_DIR/include-probe
-  local ignore_input_file=$TEMP_DIR/ignore-input
-  local ignored_file=$TEMP_DIR/ignored
+directory_tree_is_safe() {
+  local source=$1 directory=$2 status
+
+  inspect_directory_tree "$source/$directory"
+  status=$?
+  if ((status == 0)); then
+    warn "selected directory contains a nested Git repository: $directory"
+    return 1
+  elif ((status == 2)); then
+    warn "could not inspect selected directory: $directory"
+    return 1
+  elif ((status == 3)); then
+    warn "selected directory contains an unsupported source type: $directory"
+    return 1
+  fi
+
+  return 0
+}
+
+# Special files (fifos, sockets, devices) don't show up in a normal tree
+# walk, so they're matched separately against a synthetic index.
+discover_candidates() {
+  local source=$1 selection_index=$2 leaves_file=$3 collapsed_file=$4
+  shift 4
 
   if ! GIT_INDEX_FILE=$selection_index git -C "$source" read-tree --empty || \
     ! GIT_INDEX_FILE=$selection_index git -C "$source" ls-files --others --ignored -z \
-    "${include_args[@]}" -- >"$leaves_file"; then
+    "$@" -- >"$leaves_file"; then
     warn "could not evaluate include patterns, skipping"
     return 1
   fi
   if ! GIT_INDEX_FILE=$selection_index git -C "$source" ls-files --others --ignored --directory -z \
-    "${include_args[@]}" -- >"$collapsed_file"; then
+    "$@" -- >"$collapsed_file"; then
     warn "could not evaluate include directories, skipping"
     return 1
   fi
+
+  local special_paths_file=$TEMP_DIR/special-paths
+  local special_index_input=$TEMP_DIR/special-index-input
+  local special_index=$TEMP_DIR/special-index
 
   find "$source" -name .git -prune -o \
     ! -type f ! -type d ! -type l -print0 >"$special_paths_file" 2>/dev/null || true
@@ -361,39 +383,42 @@ select_entries() {
     warn "could not prepare source type matching, skipping"
     return 1
   }
+
+  local path
   : >"$special_index_input"
   while IFS= read -r -d '' path; do
     path=${path#"$source"/}
     printf '100644 %s\t%s\0' "$empty_blob" "$path" >>"$special_index_input"
   done <"$special_paths_file"
+
   if [[ -s $special_index_input ]]; then
     if ! GIT_INDEX_FILE=$special_index git -C "$source" read-tree --empty || \
       ! GIT_INDEX_FILE=$special_index git -C "$source" update-index -z --index-info \
         <"$special_index_input" || \
       ! GIT_INDEX_FILE=$special_index git -C "$source" ls-files --cached --ignored -z \
-        "${include_args[@]}" >>"$leaves_file"; then
+        "$@" >>"$leaves_file"; then
       warn "could not evaluate include patterns for special files, skipping"
       return 1
     fi
   fi
+}
 
-  local -A leaves=() directory_candidates=() direct_directories=() ignore_candidates=() ignored=()
-  local path directory ancestor status
+collect_directory_candidates() {
+  local source=$1 leaves_file=$2 collapsed_file=$3 candidates_file=$4
+
+  local -A leaves=() seen=()
+  read_null_set "$leaves_file" leaves
+
+  local path directory ancestor
   local -a ancestors=()
 
-  while IFS= read -r -d '' path; do
-    path=${path%/}
-    [[ -n $path ]] && leaves[$path]=1
-  done <"$leaves_file"
-
-  local directory_candidates_file=$TEMP_DIR/directory-candidates
-  : >"$directory_candidates_file"
+  : >"$candidates_file"
   while IFS= read -r -d '' path; do
     [[ $path == */ ]] || continue
     directory=${path%/}
-    if [[ -z ${directory_candidates[$directory]+set} ]]; then
-      directory_candidates[$directory]=1
-      printf '%s\0' "$directory" >>"$directory_candidates_file"
+    if [[ -z ${seen[$directory]+set} ]]; then
+      seen[$directory]=1
+      printf '%s\0' "$directory" >>"$candidates_file"
     fi
   done <"$collapsed_file"
 
@@ -408,17 +433,23 @@ select_entries() {
     done
     for ancestor in "${ancestors[@]}"; do
       [[ -d $source/$ancestor && ! -L $source/$ancestor ]] || continue
-      if [[ -z ${directory_candidates[$ancestor]+set} ]]; then
-        directory_candidates[$ancestor]=1
-        printf '%s\0' "$ancestor" >>"$directory_candidates_file"
+      if [[ -z ${seen[$ancestor]+set} ]]; then
+        seen[$ancestor]=1
+        printf '%s\0' "$ancestor" >>"$candidates_file"
       fi
     done
   done
+}
 
+classify_direct_directories() {
+  local source=$1 selection_index=$2 probe_file=$3 candidates_file=$4 direct_directories_file=$5
+  shift 5
+
+  local directory status
+  : >"$direct_directories_file"
   while IFS= read -r -d '' directory; do
-    if is_direct_directory_match "$source" "$selection_index" "$probe_file" "$directory" \
-      "${include_args[@]}"; then
-      direct_directories[$directory]=1
+    if is_direct_directory_match "$source" "$selection_index" "$probe_file" "$directory" "$@"; then
+      printf '%s\0' "$directory" >>"$direct_directories_file"
     else
       status=$?
       if ((status == 2)); then
@@ -426,94 +457,108 @@ select_entries() {
         return 1
       fi
     fi
-  done <"$directory_candidates_file"
+  done <"$candidates_file"
+}
 
-  for path in "${!leaves[@]}" "${!direct_directories[@]}"; do
-    [[ -n $path ]] && ignore_candidates[$path]=1
-  done
+check_standard_ignores() {
+  local source=$1 leaves_file=$2 direct_directories_file=$3 ignored_file=$4
 
-  : >"$ignore_input_file"
-  for path in "${!ignore_candidates[@]}"; do
-    printf './%s\0' "$path" >>"$ignore_input_file"
-  done
-
-  if git -C "$source" check-ignore --stdin -z <"$ignore_input_file" >"$ignored_file"; then
-    :
-  else
-    status=$?
-    if ((status != 1)); then
-      warn "could not inspect standard Git ignores, skipping"
-      return 1
-    fi
-  fi
+  local ignore_input_file=$TEMP_DIR/ignore-input
+  local path status
 
   : >"$ignore_input_file"
-  for path in "${!direct_directories[@]}"; do
-    printf './%s\0' "$path" >>"$ignore_input_file"
-  done
-  if git -C "$source" check-ignore --no-index --stdin -z \
-    <"$ignore_input_file" >>"$ignored_file"; then
-    :
-  else
-    status=$?
-    if ((status != 1)); then
-      warn "could not inspect standard Git ignores, skipping"
-      return 1
-    fi
-  fi
-
   while IFS= read -r -d '' path; do
-    path=${path#./}
-    path=${path%/}
-    [[ -n $path ]] && ignored[$path]=1
-  done <"$ignored_file"
+    printf './%s\0' "$path" >>"$ignore_input_file"
+  done <"$leaves_file"
+  while IFS= read -r -d '' path; do
+    printf './%s\0' "$path" >>"$ignore_input_file"
+  done <"$direct_directories_file"
 
-  local -a accepted_directories=() rejected_directories=()
-  local inspection_status
-  : >"$output_file"
+  : >"$ignored_file"
+  git -C "$source" check-ignore --stdin -z <"$ignore_input_file" >>"$ignored_file"
+  status=$?
+  if ((status != 0 && status != 1)); then
+    warn "could not inspect standard Git ignores, skipping"
+    return 1
+  fi
+
+  : >"$ignore_input_file"
+  while IFS= read -r -d '' path; do
+    printf './%s\0' "$path" >>"$ignore_input_file"
+  done <"$direct_directories_file"
+  git -C "$source" check-ignore --no-index --stdin -z \
+    <"$ignore_input_file" >>"$ignored_file"
+  status=$?
+  if ((status != 0 && status != 1)); then
+    warn "could not inspect standard Git ignores, skipping"
+    return 1
+  fi
+}
+
+# candidates_file is shallowest-first, so accepted/rejected directories are
+# recorded here for the leaf pass to skip their descendants.
+accept_direct_directories() {
+  local source=$1 worktree=$2 source_tracked_file=$3 worktree_tracked_file=$4
+  local candidates_file=$5 direct_directories_file=$6 ignored_file=$7 output_file=$8
+  local accepted_file=$9 rejected_file=${10}
+
+  local -A direct=() ignored=()
+  read_null_set "$direct_directories_file" direct
+  read_null_set "$ignored_file" ignored
+
+  local -a accepted=() rejected=()
+  local directory
+
+  : >"$accepted_file"
+  : >"$rejected_file"
 
   while IFS= read -r -d '' directory; do
-    [[ -n ${direct_directories[$directory]+set} ]] || continue
-    if is_below_entry "$directory" "${accepted_directories[@]}" || \
-      is_below_entry "$directory" "${rejected_directories[@]}"; then
+    [[ -n ${direct[$directory]+set} ]] || continue
+    if is_below_entry "$directory" "${accepted[@]}" || \
+      is_below_entry "$directory" "${rejected[@]}"; then
       continue
     fi
 
     if has_tracked_conflict "$source" "$source_tracked_file" "$directory" || \
       has_tracked_conflict "$worktree" "$worktree_tracked_file" "$directory"; then
       warn "tracked path conflict: $directory"
-      rejected_directories+=("$directory")
+      rejected+=("$directory")
+      printf '%s\0' "$directory" >>"$rejected_file"
       continue
     fi
 
-    if inspect_directory_tree "$source/$directory"; then
-      warn "selected directory contains a nested Git repository: $directory"
-      rejected_directories+=("$directory")
+    if ! directory_tree_is_safe "$source" "$directory"; then
+      rejected+=("$directory")
+      printf '%s\0' "$directory" >>"$rejected_file"
       continue
-    else
-      inspection_status=$?
-      if ((inspection_status == 2)); then
-        warn "could not inspect selected directory: $directory"
-        rejected_directories+=("$directory")
-        continue
-      elif ((inspection_status == 3)); then
-        warn "selected directory contains an unsupported source type: $directory"
-        rejected_directories+=("$directory")
-        continue
-      fi
     fi
 
     [[ -n ${ignored[$directory]+set} ]] || continue
-    accepted_directories+=("$directory")
+    accepted+=("$directory")
+    printf '%s\0' "$directory" >>"$accepted_file"
     printf '%s\0' "$directory" >>"$output_file"
-  done <"$directory_candidates_file"
+  done <"$candidates_file"
+}
 
+accept_leaf_entries() {
+  local source=$1 worktree=$2 source_tracked_file=$3 worktree_tracked_file=$4
+  local leaves_file=$5 ignored_file=$6 accepted_directories_file=$7
+  local rejected_directories_file=$8 output_file=$9
+
+  local -A ignored=()
+  read_null_set "$ignored_file" ignored
+
+  local -a accepted=() rejected=()
+  mapfile -d '' -t accepted <"$accepted_directories_file"
+  mapfile -d '' -t rejected <"$rejected_directories_file"
+
+  local path
   while IFS= read -r -d '' path; do
     path=${path%/}
     [[ -n $path ]] || continue
     [[ -n ${ignored[$path]+set} ]] || continue
-    if is_below_entry "$path" "${accepted_directories[@]}" || \
-      is_below_entry "$path" "${rejected_directories[@]}"; then
+    if is_below_entry "$path" "${accepted[@]}" || \
+      is_below_entry "$path" "${rejected[@]}"; then
       continue
     fi
 
@@ -528,24 +573,54 @@ select_entries() {
       continue
     fi
 
-    if [[ -d $source/$path && ! -L $source/$path ]]; then
-      if inspect_directory_tree "$source/$path"; then
-        warn "selected directory contains a nested Git repository: $path"
-        continue
-      else
-        inspection_status=$?
-        if ((inspection_status == 2)); then
-          warn "could not inspect selected directory: $path"
-          continue
-        elif ((inspection_status == 3)); then
-          warn "selected directory contains an unsupported source type: $path"
-          continue
-        fi
-      fi
+    if [[ -d $source/$path && ! -L $source/$path ]] && ! directory_tree_is_safe "$source" "$path"; then
+      continue
     fi
 
     printf '%s\0' "$path" >>"$output_file"
   done <"$leaves_file"
+}
+
+select_entries() {
+  local source=$1 worktree=$2 source_tracked_file=$3 worktree_tracked_file=$4 output_file=$5
+  shift 5
+
+  local -a include_args=()
+  local include_file
+  for include_file in "$@"; do
+    include_args+=(--exclude-from="$include_file")
+  done
+  ((${#include_args[@]})) || return 0
+
+  local selection_index=$TEMP_DIR/selection-index
+  local probe_file=$TEMP_DIR/include-probe
+  local leaves_file=$TEMP_DIR/include-leaves
+  local collapsed_file=$TEMP_DIR/include-collapsed
+  local candidates_file=$TEMP_DIR/directory-candidates
+  local direct_directories_file=$TEMP_DIR/direct-directories
+  local ignored_file=$TEMP_DIR/ignored
+  local accepted_directories_file=$TEMP_DIR/accepted-directories
+  local rejected_directories_file=$TEMP_DIR/rejected-directories
+
+  discover_candidates "$source" "$selection_index" "$leaves_file" "$collapsed_file" \
+    "${include_args[@]}" || return 1
+
+  collect_directory_candidates "$source" "$leaves_file" "$collapsed_file" "$candidates_file"
+
+  classify_direct_directories "$source" "$selection_index" "$probe_file" "$candidates_file" \
+    "$direct_directories_file" "${include_args[@]}" || return 1
+
+  check_standard_ignores "$source" "$leaves_file" "$direct_directories_file" "$ignored_file" || \
+    return 1
+
+  : >"$output_file"
+  accept_direct_directories "$source" "$worktree" "$source_tracked_file" "$worktree_tracked_file" \
+    "$candidates_file" "$direct_directories_file" "$ignored_file" "$output_file" \
+    "$accepted_directories_file" "$rejected_directories_file"
+
+  accept_leaf_entries "$source" "$worktree" "$source_tracked_file" "$worktree_tracked_file" \
+    "$leaves_file" "$ignored_file" "$accepted_directories_file" "$rejected_directories_file" \
+    "$output_file"
 }
 
 install_entry() {
