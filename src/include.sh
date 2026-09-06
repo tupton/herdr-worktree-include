@@ -49,7 +49,8 @@ elapsed_since() {
   awk -v start="$start" -v end="${EPOCHREALTIME:-0}" 'BEGIN { printf "%.6f", end - start }'
 }
 
-# shellcheck disable=SC2329
+# ShellCheck 0.9.0 cannot see that the EXIT trap invokes this function.
+# shellcheck disable=SC2317,SC2329
 write_diagnostics() {
   local destination=${HERDR_WORKTREE_INCLUDE_DIAGNOSTICS:-}
   [[ -n $destination && $DIAGNOSTICS_WRITTEN == 0 ]] || return 0
@@ -122,7 +123,7 @@ write_diagnostics() {
     }' >"$destination" 2>/dev/null || true
 }
 
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 cleanup_temp() {
   write_diagnostics
   [[ -z ${TEMP_DIR:-} ]] || rm -rf "$TEMP_DIR"
