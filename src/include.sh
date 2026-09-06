@@ -71,8 +71,8 @@ meaningful_lines() {
 }
 
 has_tracked_conflict() {
-  local repository=$1 tracked_file=$2 entry=$3
-  local tracked prefix=$entry ignore_case=false pathspec_prefix=':(top,literal)'
+  local repository=$1 entry=$2
+  local prefix=$entry ignore_case=false pathspec_prefix=':(top,literal)'
 
   ignore_case=$(git -C "$repository" config --bool core.ignoreCase 2>/dev/null) || ignore_case=false
   [[ $ignore_case == true ]] && pathspec_prefix=':(top,icase,literal)'
@@ -89,14 +89,6 @@ has_tracked_conflict() {
       return 0
     fi
   done
-
-  while IFS= read -r -d '' tracked; do
-    if [[ $ignore_case == true ]]; then
-      [[ ${tracked,,} == "${entry,,}/"* ]] && return 0
-    else
-      [[ $tracked == "$entry/"* ]] && return 0
-    fi
-  done <"$tracked_file"
 
   return 1
 }
@@ -498,9 +490,9 @@ check_standard_ignores() {
 # candidates_file is shallowest-first, so accepted/rejected directories are
 # recorded here for the leaf pass to skip their descendants.
 accept_direct_directories() {
-  local source=$1 worktree=$2 source_tracked_file=$3 worktree_tracked_file=$4
-  local candidates_file=$5 direct_directories_file=$6 ignored_file=$7 output_file=$8
-  local accepted_file=$9 rejected_file=${10}
+  local source=$1 worktree=$2
+  local candidates_file=$3 direct_directories_file=$4 ignored_file=$5 output_file=$6
+  local accepted_file=$7 rejected_file=$8
 
   local -A direct=() ignored=()
   read_null_set "$direct_directories_file" direct
@@ -519,8 +511,8 @@ accept_direct_directories() {
       continue
     fi
 
-    if has_tracked_conflict "$source" "$source_tracked_file" "$directory" || \
-      has_tracked_conflict "$worktree" "$worktree_tracked_file" "$directory"; then
+    if has_tracked_conflict "$source" "$directory" || \
+      has_tracked_conflict "$worktree" "$directory"; then
       warn "tracked path conflict: $directory"
       rejected+=("$directory")
       printf '%s\0' "$directory" >>"$rejected_file"
@@ -541,9 +533,9 @@ accept_direct_directories() {
 }
 
 accept_leaf_entries() {
-  local source=$1 worktree=$2 source_tracked_file=$3 worktree_tracked_file=$4
-  local leaves_file=$5 ignored_file=$6 accepted_directories_file=$7
-  local rejected_directories_file=$8 output_file=$9
+  local source=$1 worktree=$2
+  local leaves_file=$3 ignored_file=$4 accepted_directories_file=$5
+  local rejected_directories_file=$6 output_file=$7
 
   local -A ignored=()
   read_null_set "$ignored_file" ignored
@@ -562,8 +554,8 @@ accept_leaf_entries() {
       continue
     fi
 
-    if has_tracked_conflict "$source" "$source_tracked_file" "$path" || \
-      has_tracked_conflict "$worktree" "$worktree_tracked_file" "$path"; then
+    if has_tracked_conflict "$source" "$path" || \
+      has_tracked_conflict "$worktree" "$path"; then
       warn "tracked path conflict: $path"
       continue
     fi
@@ -582,8 +574,8 @@ accept_leaf_entries() {
 }
 
 select_entries() {
-  local source=$1 worktree=$2 source_tracked_file=$3 worktree_tracked_file=$4 output_file=$5
-  shift 5
+  local source=$1 worktree=$2 output_file=$3
+  shift 3
 
   local -a include_args=()
   local include_file
@@ -614,27 +606,22 @@ select_entries() {
     return 1
 
   : >"$output_file"
-  accept_direct_directories "$source" "$worktree" "$source_tracked_file" "$worktree_tracked_file" \
+  accept_direct_directories "$source" "$worktree" \
     "$candidates_file" "$direct_directories_file" "$ignored_file" "$output_file" \
     "$accepted_directories_file" "$rejected_directories_file"
 
-  accept_leaf_entries "$source" "$worktree" "$source_tracked_file" "$worktree_tracked_file" \
+  accept_leaf_entries "$source" "$worktree" \
     "$leaves_file" "$ignored_file" "$accepted_directories_file" "$rejected_directories_file" \
     "$output_file"
 }
 
 install_entry() {
-  local mode=$1 source=$2 worktree=$3 source_tracked_file=$4 worktree_tracked_file=$5 entry=$6
+  local mode=$1 source=$2 worktree=$3 entry=$4
   local source_path=$source/$entry
   local destination=$worktree/$entry
 
-  if ! git -C "$source" ls-files -z >"$source_tracked_file" 2>/dev/null || \
-    ! git -C "$worktree" ls-files -z >"$worktree_tracked_file" 2>/dev/null; then
-    warn "could not inspect tracked paths, skipping: $entry"
-    return 1
-  fi
-  if has_tracked_conflict "$source" "$source_tracked_file" "$entry" || \
-    has_tracked_conflict "$worktree" "$worktree_tracked_file" "$entry"; then
+  if has_tracked_conflict "$source" "$entry" || \
+    has_tracked_conflict "$worktree" "$entry"; then
     warn "tracked path conflict: $entry"
     return 1
   fi
@@ -740,18 +727,9 @@ main() {
   mapfile -d '' -t include_paths <"$include_paths_file"
   ((${#include_paths[@]})) || return 0
 
-  local source_tracked_file=$TEMP_DIR/source-tracked
-  local worktree_tracked_file=$TEMP_DIR/worktree-tracked
   local entries_file=$TEMP_DIR/entries
 
-  if ! git -C "$source" ls-files -z >"$source_tracked_file" 2>/dev/null || \
-    ! git -C "$worktree" ls-files -z >"$worktree_tracked_file" 2>/dev/null; then
-    warn "could not inspect tracked paths, skipping"
-    return 0
-  fi
-
-  if ! select_entries "$source" "$worktree" "$source_tracked_file" "$worktree_tracked_file" \
-    "$entries_file" "${include_paths[@]}"; then
+  if ! select_entries "$source" "$worktree" "$entries_file" "${include_paths[@]}"; then
     return 0
   fi
 
@@ -761,8 +739,7 @@ main() {
 
   local entry created=0 skipped=0
   for entry in "${entries[@]}"; do
-    if install_entry "$mode" "$source" "$worktree" "$source_tracked_file" \
-      "$worktree_tracked_file" "$entry"; then
+    if install_entry "$mode" "$source" "$worktree" "$entry"; then
       created=$((created + 1))
     else
       skipped=$((skipped + 1))
