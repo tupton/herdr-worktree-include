@@ -346,7 +346,9 @@ meaningful_lines() {
 }
 
 snapshot_index() {
-  local repository=$1 role=$2 tracked_name=$3 descendants_name=$4 ignore_case_name=$5
+  local repository=$1 role=$2 snapshot_name=$3
+  local tracked_name=${snapshot_name}_tracked descendants_name=${snapshot_name}_descendants
+  local ignore_case_name=${snapshot_name}_ignore_case
   local -n tracked_ref=$tracked_name descendants_ref=$descendants_name ignore_case_ref=$ignore_case_name
   local snapshot_file=$TEMP_DIR/index-snapshot-$role path key prefix
 
@@ -374,11 +376,15 @@ snapshot_index() {
 }
 
 has_snapshot_conflict() {
-  local entry=$1 tracked_reference_name=$2 descendants_reference_name=$3 ignore_case=$4
+  local entry=$1 snapshot_name=$2
+  local tracked_reference_name=${snapshot_name}_tracked
+  local descendants_reference_name=${snapshot_name}_descendants
+  local ignore_case_reference_name=${snapshot_name}_ignore_case
   # shellcheck disable=SC2178
   local -n tracked_ref=$tracked_reference_name descendants_ref=$descendants_reference_name
+  local -n ignore_case_ref=$ignore_case_reference_name
   local key=$entry prefix
-  [[ $ignore_case == true ]] && key=${key,,}
+  [[ $ignore_case_ref == true ]] && key=${key,,}
 
   [[ -n ${tracked_ref[$key]+set} || -n ${descendants_ref[$key]+set} ]] && return 0
 
@@ -392,14 +398,9 @@ has_snapshot_conflict() {
 }
 
 has_tracked_conflict() {
-  local entry=$1 source_tracked_reference=$2 source_descendants_reference=$3 source_ignore_case=$4
-  local destination_tracked_reference=$5 destination_descendants_reference=$6
-  local destination_ignore_case=$7
-  has_snapshot_conflict "$entry" "$source_tracked_reference" "$source_descendants_reference" \
-    "$source_ignore_case" || \
-    has_snapshot_conflict "$entry" "$destination_tracked_reference" \
-      "$destination_descendants_reference" \
-      "$destination_ignore_case"
+  local entry=$1 source_snapshot=$2 destination_snapshot=$3
+  has_snapshot_conflict "$entry" "$source_snapshot" || \
+    has_snapshot_conflict "$entry" "$destination_snapshot"
 }
 
 has_unsafe_destination_parent() {
@@ -873,9 +874,7 @@ accept_direct_directories() {
   local source=$1 worktree=$2
   local candidates_file=$3 direct_directories_file=$4 ignored_file=$5 output_file=$6
   local accepted_file=$7 rejected_file=$8
-  local source_tracked_name=$9 source_descendants_name=${10} source_ignore_case=${11}
-  local destination_tracked_name=${12} destination_descendants_name=${13}
-  local destination_ignore_case=${14}
+  local source_snapshot=$9 destination_snapshot=${10}
 
   local -A direct=() ignored=()
   read_null_set "$direct_directories_file" direct
@@ -894,9 +893,7 @@ accept_direct_directories() {
       continue
     fi
 
-    if has_tracked_conflict "$directory" "$source_tracked_name" "$source_descendants_name" \
-      "$source_ignore_case" "$destination_tracked_name" "$destination_descendants_name" \
-      "$destination_ignore_case"; then
+    if has_tracked_conflict "$directory" "$source_snapshot" "$destination_snapshot"; then
       warn "tracked path conflict: $directory"
       rejected+=("$directory")
       printf '%s\0' "$directory" >>"$rejected_file"
@@ -921,9 +918,7 @@ accept_leaf_entries() {
   local source=$1 worktree=$2
   local leaves_file=$3 ignored_file=$4 accepted_directories_file=$5
   local rejected_directories_file=$6 output_file=$7
-  local source_tracked_name=$8 source_descendants_name=$9 source_ignore_case=${10}
-  local destination_tracked_name=${11} destination_descendants_name=${12}
-  local destination_ignore_case=${13}
+  local source_snapshot=$8 destination_snapshot=$9
 
   local -A ignored=()
   read_null_set "$ignored_file" ignored
@@ -942,9 +937,7 @@ accept_leaf_entries() {
       continue
     fi
 
-    if has_tracked_conflict "$path" "$source_tracked_name" "$source_descendants_name" \
-      "$source_ignore_case" "$destination_tracked_name" "$destination_descendants_name" \
-      "$destination_ignore_case"; then
+    if has_tracked_conflict "$path" "$source_snapshot" "$destination_snapshot"; then
       warn "tracked path conflict: $path"
       continue
     fi
@@ -1017,13 +1010,13 @@ select_entries() {
   phase_start=${EPOCHREALTIME:-0}
   # These local sets are passed by name to the acceptance phase.
   # shellcheck disable=SC2034
-  local -A source_tracked=() source_descendants=()
+  local -A initial_source_tracked=() initial_source_descendants=()
   # shellcheck disable=SC2034
-  local -A destination_tracked=() destination_descendants=()
-  local source_ignore_case=false destination_ignore_case=false
-  snapshot_index "$source" source source_tracked source_descendants source_ignore_case || return 1
-  snapshot_index "$worktree" destination destination_tracked destination_descendants \
-    destination_ignore_case || return 1
+  local -A initial_destination_tracked=() initial_destination_descendants=()
+  # shellcheck disable=SC2034
+  local initial_source_ignore_case=false initial_destination_ignore_case=false
+  snapshot_index "$source" source initial_source || return 1
+  snapshot_index "$worktree" destination initial_destination || return 1
   record_phase index_snapshots "$phase_start"
 
   : >"$output_file"
@@ -1031,27 +1024,21 @@ select_entries() {
   accept_direct_directories "$source" "$worktree" \
     "$candidates_file" "$direct_directories_file" "$ignored_file" "$output_file" \
     "$accepted_directories_file" "$rejected_directories_file" \
-    source_tracked source_descendants "$source_ignore_case" \
-    destination_tracked destination_descendants "$destination_ignore_case"
+    initial_source initial_destination
 
   accept_leaf_entries "$source" "$worktree" \
     "$leaves_file" "$ignored_file" "$accepted_directories_file" "$rejected_directories_file" \
-    "$output_file" source_tracked source_descendants "$source_ignore_case" \
-    destination_tracked destination_descendants "$destination_ignore_case"
+    "$output_file" initial_source initial_destination
   record_phase safety "$phase_start"
 }
 
 install_entry() {
   local mode=$1 source=$2 worktree=$3 entry=$4
-  local source_tracked_name=$5 source_descendants_name=$6 source_ignore_case=$7
-  local destination_tracked_name=$8 destination_descendants_name=$9
-  local destination_ignore_case=${10}
+  local source_snapshot=$5 destination_snapshot=$6
   local source_path=$source/$entry
   local destination=$worktree/$entry
 
-  if has_tracked_conflict "$entry" "$source_tracked_name" "$source_descendants_name" \
-    "$source_ignore_case" "$destination_tracked_name" "$destination_descendants_name" \
-    "$destination_ignore_case"; then
+  if has_tracked_conflict "$entry" "$source_snapshot" "$destination_snapshot"; then
     warn "tracked path conflict: $entry"
     return 1
   fi
@@ -1173,19 +1160,16 @@ main() {
   local -A fresh_source_tracked=() fresh_source_descendants=()
   # shellcheck disable=SC2034
   local -A fresh_destination_tracked=() fresh_destination_descendants=()
+  # shellcheck disable=SC2034
   local fresh_source_ignore_case=false fresh_destination_ignore_case=false
-  snapshot_index "$source" source fresh_source_tracked fresh_source_descendants \
-    fresh_source_ignore_case || return 0
-  snapshot_index "$worktree" destination fresh_destination_tracked \
-    fresh_destination_descendants fresh_destination_ignore_case || return 0
+  snapshot_index "$source" source fresh_source || return 0
+  snapshot_index "$worktree" destination fresh_destination || return 0
   record_phase recheck "$phase_start"
 
   local entry created=0 skipped=0
   phase_start=${EPOCHREALTIME:-0}
   for entry in "${entries[@]}"; do
-    if install_entry "$mode" "$source" "$worktree" "$entry" \
-      fresh_source_tracked fresh_source_descendants "$fresh_source_ignore_case" \
-      fresh_destination_tracked fresh_destination_descendants "$fresh_destination_ignore_case"; then
+    if install_entry "$mode" "$source" "$worktree" "$entry" fresh_source fresh_destination; then
       created=$((created + 1))
     else
       skipped=$((skipped + 1))
