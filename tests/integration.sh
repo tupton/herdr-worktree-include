@@ -623,12 +623,13 @@ test_copy_failure_preserves_partial_destination() {
   printf 'cache\n' > "$REPO/.worktreeinclude"
   printf 'cached\n' > "$REPO/cache/value"
   real_cp=$(command -v cp)
-  # Write parameter expansion literally for the fake cp.
+  # Delegate to the real cp except for the -RP call install_entry makes, so
+  # the plugin's own include-file snapshot copy still succeeds.
   # shellcheck disable=SC2016
-  printf '#!/usr/bin/env bash\ndestination=${@: -1}\nmkdir -p "$destination"\nprintf partial > "$destination/partial"\nexit 1\n' > "$TEST_ROOT/bin/cp"
+  printf '#!/usr/bin/env bash\n[ "$1" = -RP ] || exec "$REAL_CP" "$@"\ndestination=${@: -1}\nmkdir -p "$destination"\nprintf partial > "$destination/partial"\nexit 1\n' > "$TEST_ROOT/bin/cp"
   chmod +x "$TEST_ROOT/bin/cp"
 
-  OUTPUT=$(PATH="$TEST_ROOT/bin:$PATH" HERDR_PLUGIN_EVENT_JSON="$EVENT_JSON" bash "$PLUGIN" 2>&1)
+  OUTPUT=$(REAL_CP="$real_cp" PATH="$TEST_ROOT/bin:$PATH" HERDR_PLUGIN_EVENT_JSON="$EVENT_JSON" bash "$PLUGIN" 2>&1)
   STATUS=$?
 
   [ -x "$real_cp" ] || fail "could not locate real cp"

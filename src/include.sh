@@ -193,8 +193,7 @@ collect_include_files() {
   local source=$1 snapshot_directory=$2
   shift 2
 
-  local include_file include_path snapshot snapshot_cp count=0
-  snapshot_cp=$(command -p -v cp) || return 1
+  local include_file include_path snapshot count=0
 
   for include_file in "$@"; do
     include_path=$source/$include_file
@@ -207,7 +206,7 @@ collect_include_files() {
       return 1
     fi
     snapshot=$snapshot_directory/$count
-    if ! "$snapshot_cp" "$include_path" "$snapshot"; then
+    if ! cp "$include_path" "$snapshot"; then
       warn "could not read include file: $include_path"
       return 1
     fi
