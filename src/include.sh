@@ -549,11 +549,17 @@ select_entries() {
 }
 
 install_entry() {
-  local mode=$1 source=$2 worktree=$3 tracked_file=$4 entry=$5
+  local mode=$1 source=$2 worktree=$3 source_tracked_file=$4 worktree_tracked_file=$5 entry=$6
   local source_path=$source/$entry
   local destination=$worktree/$entry
 
-  if has_tracked_conflict "$worktree" "$tracked_file" "$entry"; then
+  if ! git -C "$source" ls-files -z >"$source_tracked_file" 2>/dev/null || \
+    ! git -C "$worktree" ls-files -z >"$worktree_tracked_file" 2>/dev/null; then
+    warn "could not inspect tracked paths, skipping: $entry"
+    return 1
+  fi
+  if has_tracked_conflict "$source" "$source_tracked_file" "$entry" || \
+    has_tracked_conflict "$worktree" "$worktree_tracked_file" "$entry"; then
     warn "tracked path conflict: $entry"
     return 1
   fi
@@ -680,7 +686,8 @@ main() {
 
   local entry created=0 skipped=0
   for entry in "${entries[@]}"; do
-    if install_entry "$mode" "$source" "$worktree" "$worktree_tracked_file" "$entry"; then
+    if install_entry "$mode" "$source" "$worktree" "$source_tracked_file" \
+      "$worktree_tracked_file" "$entry"; then
       created=$((created + 1))
     else
       skipped=$((skipped + 1))

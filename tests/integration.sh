@@ -546,6 +546,25 @@ test_case_insensitive_tracked_conflict() {
   assert_output_contains "tracked path conflict: Cache"
 }
 
+test_source_tracked_conflict_is_rechecked_before_install() {
+  printf 'race.env\n' > "$REPO/.worktreeinclude"
+  printf 'local\n' > "$REPO/race.env"
+  mkdir "$TEST_ROOT/bin"
+  real_git=$(command -v git)
+  # Track the selected source path after selection and before installation.
+  # shellcheck disable=SC2016
+  printf '#!/usr/bin/env bash\n"$REAL_GIT" "$@"\nstatus=$?\ncase " $* " in\n  *" check-ignore "*) "$REAL_GIT" -C "$REPO" add -f race.env ;;\nesac\nexit "$status"\n' > "$TEST_ROOT/bin/git"
+  chmod +x "$TEST_ROOT/bin/git"
+
+  OUTPUT=$(REPO="$REPO" REAL_GIT="$real_git" PATH="$TEST_ROOT/bin:$PATH" \
+    HERDR_PLUGIN_EVENT_JSON="$EVENT_JSON" bash "$PLUGIN" 2>&1)
+  STATUS=$?
+
+  [ "$STATUS" -eq 0 ] || fail "plugin exited $STATUS"
+  assert_missing "$WORKTREE/race.env" || return 1
+  assert_output_contains "tracked path conflict: race.env"
+}
+
 test_tracked_path_absent_from_disk() {
   printf 'sparse.env\n' > "$REPO/sparse.env"
   git -C "$REPO" add -f sparse.env
@@ -658,6 +677,7 @@ run_test "tracked descendant conflict" test_tracked_descendant_conflict
 run_test "tracked ancestor conflict" test_tracked_ancestor_conflict
 run_test "source-only tracked ancestor conflict" test_source_only_tracked_ancestor_conflict
 run_test "case-insensitive tracked conflict" test_case_insensitive_tracked_conflict
+run_test "source tracked conflicts are rechecked before install" test_source_tracked_conflict_is_rechecked_before_install
 run_test "tracked path absent from disk" test_tracked_path_absent_from_disk
 run_test "existing destination is preserved" test_existing_destination_is_preserved
 run_test "unsafe destination parents are skipped" test_unsafe_destination_parent_is_skipped
