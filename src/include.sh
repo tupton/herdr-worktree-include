@@ -785,6 +785,10 @@ collect_directory_candidates() {
     fi
   done <"$collapsed_file"
 
+  # Exact file targets cannot make their ancestors atomic. For a literal plan,
+  # the collapsed traversal already contains every explicit directory target.
+  [[ $PLAN_TIER == rooted-literal ]] && return 0
+
   for path in "${!leaves[@]}"; do
     directory=${path%/*}
     [[ $directory != "$path" ]] || continue

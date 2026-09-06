@@ -201,7 +201,7 @@ These are proposed gates, not evidence that the implementation already meets the
 
 ## Resolved implementation choices
 
-- Preserve one warning for every selected special file. Literal plans inspect exact targets; rooted-prefix plans inspect only their scoped roots; whole-tree plans retain broad special-file discovery.
+- Preserve current special-file warnings. Each selected standalone special file is warned and skipped; an atomic directory containing one or more special files is rejected with one directory-level warning. Literal plans inspect exact targets; rooted-prefix plans inspect only their scoped roots; whole-tree plans retain broad special-file discovery.
 - Keep Git as the final matcher for rooted literals. The planner derives candidate paths and scopes but does not replace Git-ignore matching.
 - Retain Git-backed per-directory classification for generic candidates. Scope reduction bounds this work for rooted-prefix plans.
 - Expose plan, command-count, candidate-count, inspection-count, and phase-timing diagnostics through the opt-in `HERDR_WORKTREE_INCLUDE_DIAGNOSTICS` file path. This is a plugin testing interface, not a Herdr completion event.

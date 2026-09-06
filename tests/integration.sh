@@ -96,6 +96,8 @@ setup_repo() {
 teardown_repo() {
   rm -rf "$TEST_ROOT"
   TEST_ROOT=
+  DIAGNOSTICS_FILE=
+  FORCE_WHOLE_TREE=0
 }
 
 run_plugin() {
@@ -144,6 +146,7 @@ test_rooted_literal_uses_literal_plan() {
   assert_diagnostic '.plan.tier' rooted-literal || return 1
   assert_diagnostic '.plan.roots | join(",")' src/django/.env || return 1
   assert_diagnostic '.commands.discovery_directories' 0 || return 1
+  assert_diagnostic '.commands.direct_directory_probes' 0 || return 1
   assert_diagnostic '.commands.special_find' 0
 }
 
