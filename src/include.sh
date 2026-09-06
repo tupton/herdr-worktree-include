@@ -72,7 +72,7 @@ meaningful_lines() {
 
 has_tracked_conflict() {
   local repository=$1 entry=$2
-  local prefix=$entry ignore_case=false pathspec_prefix=':(top,literal)'
+  local prefix=$entry tracked ignore_case=false pathspec_prefix=':(top,literal)'
 
   ignore_case=$(git -C "$repository" config --bool core.ignoreCase 2>/dev/null) || ignore_case=false
   [[ $ignore_case == true ]] && pathspec_prefix=':(top,icase,literal)'
@@ -84,10 +84,14 @@ has_tracked_conflict() {
 
   while [[ $prefix == */* ]]; do
     prefix=${prefix%/*}
-    if git -C "$repository" ls-files --error-unmatch -- \
-      "$pathspec_prefix$prefix" >/dev/null 2>&1; then
-      return 0
-    fi
+    while IFS= read -r -d '' tracked; do
+      if [[ $ignore_case == true ]]; then
+        [[ ${tracked,,} == "${prefix,,}" ]] && return 0
+      else
+        [[ $tracked == "$prefix" ]] && return 0
+      fi
+    done < <(git -C "$repository" ls-files -z -- \
+      "$pathspec_prefix$prefix" 2>/dev/null)
   done
 
   return 1
