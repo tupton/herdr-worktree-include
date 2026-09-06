@@ -522,6 +522,21 @@ test_tracked_ancestor_conflict() {
   assert_missing "$WORKTREE/tracked-file/child"
 }
 
+test_tracked_directory_is_not_an_ancestor_conflict() {
+  mkdir -p "$REPO/src/django"
+  printf 'tracked\n' > "$REPO/src/django/tracked"
+  git -C "$REPO" add -f src/django/tracked
+  git -C "$REPO" commit -qm "Track sibling file"
+  git -C "$WORKTREE" reset -q --hard "$DEFAULT_BRANCH"
+  printf 'secret\n' > "$REPO/src/django/.env"
+  printf 'src/django/.env\n' > "$REPO/.worktreeinclude"
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/src/django/.env" || return 1
+  assert_link_target "$WORKTREE/src/django/.env" "$REPO/src/django/.env"
+}
+
 test_source_only_tracked_ancestor_conflict() {
   printf 'tracked\n' > "$REPO/source-parent"
   git -C "$REPO" add -f source-parent
@@ -686,6 +701,7 @@ run_test "malformed config skips run" test_malformed_config_skips_run
 run_test "tracked exact conflict" test_tracked_exact_conflict
 run_test "tracked descendant conflict" test_tracked_descendant_conflict
 run_test "tracked ancestor conflict" test_tracked_ancestor_conflict
+run_test "tracked directories are not ancestor conflicts" test_tracked_directory_is_not_an_ancestor_conflict
 run_test "source-only tracked ancestor conflict" test_source_only_tracked_ancestor_conflict
 run_test "case-insensitive tracked conflict" test_case_insensitive_tracked_conflict
 run_test "source tracked conflicts are rechecked before install" test_source_tracked_conflict_is_rechecked_before_install
