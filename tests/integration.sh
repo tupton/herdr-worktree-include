@@ -72,6 +72,10 @@ assert_diagnostic() {
   [ "$actual" = "$expected" ] || fail "expected diagnostic $expression to be '$expected', got '$actual'"
 }
 
+installed_entries() {
+  (cd "$WORKTREE" && find . -type l -print0)
+}
+
 setup_repo() {
   TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/worktree-include-test.XXXXXX") || return 1
   REPO=$TEST_ROOT/repo
@@ -780,6 +784,22 @@ test_rooted_prefix_does_not_inspect_unrelated_special_file() {
   assert_diagnostic '.commands.special_match' 0
 }
 
+test_mixed_prefix_plan_warns_for_literal_special_file() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/runtime" "$REPO/outside"
+  printf 'secret\n' > "$REPO/runtime/local.env"
+  mkfifo "$REPO/outside/pipe"
+  printf '/runtime/*.env\n/outside/pipe\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/runtime/local.env" || return 1
+  assert_missing "$WORKTREE/outside/pipe" || return 1
+  assert_output_contains "unsupported source type: $REPO/outside/pipe" || return 1
+  assert_diagnostic '.plan.tier' rooted-prefix
+}
+
 test_uncertain_patterns_fall_back() {
   git -C "$REPO" config core.ignoreCase false
   mkdir -p "$REPO/src"
@@ -804,6 +824,16 @@ test_case_insensitive_selection_falls_back() {
   assert_diagnostic '.plan.tier' whole-tree
 }
 
+test_nested_git_component_falls_back() {
+  git -C "$REPO" config core.ignoreCase false
+  printf '/cache/.git/config\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_diagnostic '.plan.tier' whole-tree
+}
+
 test_forced_fallback_matches_rooted_prefix_result() {
   git -C "$REPO" config core.ignoreCase false
   mkdir -p "$REPO/src/nested"
@@ -817,6 +847,8 @@ test_forced_fallback_matches_rooted_prefix_result() {
 
   assert_symlink "$WORKTREE/src/root.env" || return 1
   assert_symlink "$WORKTREE/src/nested/local.env" || return 1
+  installed_entries > "$TEST_ROOT/planned-entries"
+  planned_output=$OUTPUT
   rm "$WORKTREE/src/root.env" "$WORKTREE/src/nested/local.env"
   rmdir "$WORKTREE/src/nested" "$WORKTREE/src"
   FORCE_WHOLE_TREE=1
@@ -826,6 +858,10 @@ test_forced_fallback_matches_rooted_prefix_result() {
 
   assert_symlink "$WORKTREE/src/root.env" || return 1
   assert_symlink "$WORKTREE/src/nested/local.env" || return 1
+  installed_entries > "$TEST_ROOT/fallback-entries"
+  cmp "$TEST_ROOT/planned-entries" "$TEST_ROOT/fallback-entries" || \
+    fail "planned and fallback installed different entries" || return 1
+  [ "$OUTPUT" = "$planned_output" ] || fail "planned and fallback warnings differed" || return 1
   actual=$(jq -r '.plan.tier' "$DIAGNOSTICS_FILE") || return 1
   [ "$actual" = whole-tree ] || fail "expected forced whole-tree plan, got $actual"
 }
@@ -856,6 +892,47 @@ test_escaped_literal_metacharacter_uses_literal_plan() {
   assert_symlink "$WORKTREE/src/*.env" || return 1
   assert_diagnostic '.plan.tier' rooted-literal || return 1
   assert_diagnostic '.plan.roots | join(",")' 'src/*.env'
+}
+
+test_escaped_leading_markers_use_literal_plan() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/src"
+  printf 'hash\n' > "$REPO/src/#local"
+  printf 'bang\n' > "$REPO/src/!important"
+  printf '/src/\\#local\n/src/\\!important\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/src/#local" || return 1
+  assert_symlink "$WORKTREE/src/!important" || return 1
+  assert_diagnostic '.plan.tier' rooted-literal
+}
+
+test_trailing_space_and_malformed_escape_fall_back() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/src"
+  printf 'value\n' > "$REPO/src/value"
+  printf '/src/value   \n/src/other\\\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/src/value" || return 1
+  assert_diagnostic '.plan.tier' whole-tree
+}
+
+test_crlf_include_file_falls_back_without_changing_match() {
+  git -C "$REPO" config core.ignoreCase false
+  mkdir -p "$REPO/src"
+  printf 'value\n' > "$REPO/src/value"
+  printf '/src/value\r\n' > "$REPO/.worktreeinclude"
+  DIAGNOSTICS_FILE=$TEST_ROOT/diagnostics.json
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/src/value" || return 1
+  assert_diagnostic '.plan.tier' whole-tree
 }
 
 test_tracked_path_absent_from_disk() {
@@ -984,11 +1061,16 @@ run_test "ordinary directory trees need no repository validation" test_ordinary_
 run_test "invalid git markers are not repositories" test_invalid_git_marker_is_not_a_repository
 run_test "rooted literal special files avoid recursive find" test_rooted_literal_special_file_avoids_recursive_find
 run_test "rooted prefix does not inspect unrelated special files" test_rooted_prefix_does_not_inspect_unrelated_special_file
+run_test "mixed prefix plans warn for literal special files" test_mixed_prefix_plan_warns_for_literal_special_file
 run_test "uncertain patterns fall back" test_uncertain_patterns_fall_back
 run_test "case insensitive selection falls back" test_case_insensitive_selection_falls_back
+run_test "nested git components fall back" test_nested_git_component_falls_back
 run_test "forced fallback matches rooted prefix result" test_forced_fallback_matches_rooted_prefix_result
 run_test "only negations skip discovery" test_only_negations_skip_discovery
 run_test "escaped literal metacharacters use literal plan" test_escaped_literal_metacharacter_uses_literal_plan
+run_test "escaped leading markers use literal plan" test_escaped_leading_markers_use_literal_plan
+run_test "trailing spaces and malformed escapes fall back" test_trailing_space_and_malformed_escape_fall_back
+run_test "CRLF include files fall back without changing matches" test_crlf_include_file_falls_back_without_changing_match
 run_test "tracked path absent from disk" test_tracked_path_absent_from_disk
 run_test "existing destination is preserved" test_existing_destination_is_preserved
 run_test "unsafe destination parents are skipped" test_unsafe_destination_parent_is_skipped
