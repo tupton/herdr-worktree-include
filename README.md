@@ -156,13 +156,15 @@ The plugin rejects a selected directory as a whole if it contains tracked conten
 
 The include script avoids replacing an existing destination file, directory, or symlink. It also refuses to traverse a destination parent that is a symlink or not a directory.
 
-Before creating each destination, the plugin compares the selected path with `git ls-files`. It skips the entry if:
+During selection, the plugin reads the source and destination indexes and checks each selected path. It takes fresh index snapshots immediately before installation begins and checks the selected paths again. It skips an entry if:
 
 - The exact path is tracked.
 - A tracked path is below the selected path.
 - A tracked file or symlink is an ancestor of the selected path.
 
 The plugin checks the Git index, so tracked paths remain protected even when they are absent from disk, including in sparse checkouts.
+
+The fresh snapshots narrow the race window but cannot make filesystem installation atomic with concurrent Git index updates.
 
 The plugin supports regular files, directories, and symlinks. It warns and skips sockets, FIFOs, devices, and other special source types.
 
