@@ -97,16 +97,16 @@ Multiple `include_file` entries are allowed. This enables a committed `.worktree
 echo '.worktreeinclude.local' >> .git/info/exclude
 ```
 
+> [!WARNING]
+>
+> A broad pattern (`*`, `.*`) in an untracked include file also matches that include file itself. In symlink mode this makes the include file a symlink into the main checkout, so editing it from inside a worktree changes it for every worktree.
+
 The project configuration may also be kept local. To use the default include file without committing either configuration file:
 
 ```sh
 echo '.herdr-worktree-include'  >> .git/info/exclude
 echo '.worktreeinclude' >> .git/info/exclude
 ```
-
-> [!WARN]
->
-> A broad pattern (`*`, `.*`) in an untracked include file also matches that include file itself. In symlink mode this makes the include file a symlink into the main checkout, so editing it from inside a worktree changes it for every worktree.
 
 ## Include file format
 
