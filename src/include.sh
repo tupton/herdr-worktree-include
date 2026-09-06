@@ -25,24 +25,10 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 5 ]; then
 fi
 
 START_TIME=${EPOCHREALTIME:-0}
-PLAN_TIER=whole-tree
-declare -a PLAN_ROOTS=() PLAN_LITERALS=()
+DIAGNOSTIC_PLAN_TIER=whole-tree
 declare -A COMMAND_COUNTS=()
 declare -A METRICS=()
 declare -A PHASE_TIMES=()
-# These sets are referenced indirectly through namerefs.
-# shellcheck disable=SC2034
-declare -A SOURCE_TRACKED=() SOURCE_DESCENDANTS=()
-# shellcheck disable=SC2034
-declare -A DESTINATION_TRACKED=() DESTINATION_DESCENDANTS=()
-# shellcheck disable=SC2034
-declare -A FRESH_SOURCE_TRACKED=() FRESH_SOURCE_DESCENDANTS=()
-# shellcheck disable=SC2034
-declare -A FRESH_DESTINATION_TRACKED=() FRESH_DESTINATION_DESCENDANTS=()
-SOURCE_IGNORE_CASE=false
-DESTINATION_IGNORE_CASE=false
-FRESH_SOURCE_IGNORE_CASE=false
-FRESH_DESTINATION_IGNORE_CASE=false
 DIAGNOSTICS_WRITTEN=0
 
 count_command() {
@@ -71,12 +57,14 @@ write_diagnostics() {
 
   local roots_file=${TEMP_DIR:-${TMPDIR:-/tmp}}/diagnostic-roots
   : >"$roots_file" || return 0
-  printf '%s\0' "${PLAN_ROOTS[@]}" >"$roots_file"
+  if [[ -f ${TEMP_DIR:-}/plan-roots ]]; then
+    cp "$TEMP_DIR/plan-roots" "$roots_file" || return 0
+  fi
 
   local roots_json
   roots_json=$(jq -Rs 'split("\u0000") | map(select(length > 0))' "$roots_file") || return 0
   jq -n \
-    --arg tier "$PLAN_TIER" \
+    --arg tier "$DIAGNOSTIC_PLAN_TIER" \
     --argjson roots "$roots_json" \
     --arg total_seconds "$(elapsed_since "$START_TIME")" \
     --argjson discovery_leaves "${COMMAND_COUNTS[discovery_leaves]:-0}" \
@@ -159,7 +147,7 @@ normalize_path() {
   for component in "${parts[@]}"; do
     case $component in
       '' | .) ;;
-      ..) return 1 ;;
+      .. | .git) return 1 ;;
       *) kept+=("$component") ;;
     esac
   done
@@ -261,12 +249,15 @@ classify_include_pattern() {
 }
 
 plan_selection() {
-  local source=$1
-  shift
+  local source=$1 tier_name=$2 roots_name=$3 literals_name=$4
+  shift 4
+  # The outputs are assigned through names supplied by the caller.
+  # shellcheck disable=SC2034
+  local -n tier_ref=$tier_name roots_ref=$roots_name literals_ref=$literals_name
 
-  PLAN_TIER='rooted-literal'
-  PLAN_ROOTS=()
-  PLAN_LITERALS=()
+  tier_ref='rooted-literal'
+  roots_ref=()
+  literals_ref=()
 
   local ignore_case=false file line positive tier root
   local -A seen=()
@@ -275,6 +266,12 @@ plan_selection() {
   for file in "$@"; do
     while IFS= read -r line || [[ -n $line ]]; do
       [[ -n $line ]] || continue
+      if [[ $line == *$'\r' ]]; then
+        tier_ref=whole-tree
+        roots_ref=()
+        literals_ref=()
+        return 0
+      fi
       case $line in
         \#*) continue ;;
         !*) continue ;;
@@ -287,49 +284,50 @@ plan_selection() {
       local -a fields=()
       mapfile -d '' -t fields < <(classify_include_pattern "$positive")
       if ((${#fields[@]} != 2)); then
-        PLAN_TIER=whole-tree
-        PLAN_ROOTS=()
-        PLAN_LITERALS=()
+        tier_ref=whole-tree
+        roots_ref=()
+        literals_ref=()
         return 0
       fi
       tier=${fields[0]}
       root=${fields[1]}
       if [[ $tier == prefix ]]; then
-        PLAN_TIER='rooted-prefix'
+        tier_ref='rooted-prefix'
       else
-        PLAN_LITERALS+=("$root")
+        literals_ref+=("$root")
       fi
       [[ -n ${seen[$root]+set} ]] || {
         seen[$root]=1
-        PLAN_ROOTS+=("$root")
+        roots_ref+=("$root")
       }
     done <"$file"
   done
 
-  if [[ $ignore_case == true && ${#PLAN_ROOTS[@]} -gt 0 ]]; then
-    PLAN_TIER=whole-tree
-    PLAN_ROOTS=()
-    PLAN_LITERALS=()
+  if [[ $ignore_case == true && ${#roots_ref[@]} -gt 0 ]]; then
+    tier_ref=whole-tree
+    roots_ref=()
+    literals_ref=()
     return 0
   fi
 
   # Remove roots already covered by a shallower directory root.
   local -a minimized=()
   local candidate existing covered
-  for candidate in "${PLAN_ROOTS[@]}"; do
+  for candidate in "${roots_ref[@]}"; do
     covered=0
-    for existing in "${PLAN_ROOTS[@]}"; do
+    for existing in "${roots_ref[@]}"; do
       [[ $candidate != "$existing" && $candidate == "$existing"/* ]] && covered=1 && break
     done
     ((covered)) || minimized+=("$candidate")
   done
-  PLAN_ROOTS=("${minimized[@]}")
+  roots_ref=("${minimized[@]}")
 
   if [[ -n ${HERDR_WORKTREE_INCLUDE_DIAGNOSTICS:-} && \
     ${HERDR_WORKTREE_INCLUDE_FORCE_WHOLE_TREE:-0} == 1 ]]; then
-    PLAN_TIER=whole-tree
-    PLAN_ROOTS=()
-    PLAN_LITERALS=()
+    # shellcheck disable=SC2034 # tier_ref is a nameref output.
+    tier_ref=whole-tree
+    roots_ref=()
+    literals_ref=()
   fi
 }
 
@@ -376,9 +374,9 @@ snapshot_index() {
 }
 
 has_snapshot_conflict() {
-  local entry=$1 tracked_name=$2 descendants_name=$3 ignore_case=$4
+  local entry=$1 tracked_reference_name=$2 descendants_reference_name=$3 ignore_case=$4
   # shellcheck disable=SC2178
-  local -n tracked_ref=$tracked_name descendants_ref=$descendants_name
+  local -n tracked_ref=$tracked_reference_name descendants_ref=$descendants_reference_name
   local key=$entry prefix
   [[ $ignore_case == true ]] && key=${key,,}
 
@@ -393,18 +391,15 @@ has_snapshot_conflict() {
   return 1
 }
 
-has_initial_tracked_conflict() {
-  local entry=$1
-  has_snapshot_conflict "$entry" SOURCE_TRACKED SOURCE_DESCENDANTS "$SOURCE_IGNORE_CASE" || \
-    has_snapshot_conflict "$entry" DESTINATION_TRACKED DESTINATION_DESCENDANTS "$DESTINATION_IGNORE_CASE"
-}
-
-has_fresh_tracked_conflict() {
-  local entry=$1
-  has_snapshot_conflict "$entry" FRESH_SOURCE_TRACKED FRESH_SOURCE_DESCENDANTS \
-    "$FRESH_SOURCE_IGNORE_CASE" || \
-    has_snapshot_conflict "$entry" FRESH_DESTINATION_TRACKED FRESH_DESTINATION_DESCENDANTS \
-      "$FRESH_DESTINATION_IGNORE_CASE"
+has_tracked_conflict() {
+  local entry=$1 source_tracked_reference=$2 source_descendants_reference=$3 source_ignore_case=$4
+  local destination_tracked_reference=$5 destination_descendants_reference=$6
+  local destination_ignore_case=$7
+  has_snapshot_conflict "$entry" "$source_tracked_reference" "$source_descendants_reference" \
+    "$source_ignore_case" || \
+    has_snapshot_conflict "$entry" "$destination_tracked_reference" \
+      "$destination_descendants_reference" \
+      "$destination_ignore_case"
 }
 
 has_unsafe_destination_parent() {
@@ -672,13 +667,15 @@ directory_tree_is_safe() {
 # Special files (fifos, sockets, devices) don't show up in a normal tree
 # walk, so they're matched separately against a synthetic index.
 discover_candidates() {
-  local source=$1 selection_index=$2 leaves_file=$3 collapsed_file=$4
-  shift 4
+  local source=$1 selection_index=$2 leaves_file=$3 collapsed_file=$4 plan_tier=$5
+  local roots_name=$6 literals_name=$7
+  shift 7
+  local -n plan_roots_ref=$roots_name plan_literals_ref=$literals_name
 
   local -a pathspecs=() directory_pathspecs=()
   local root
-  if [[ $PLAN_TIER != whole-tree ]]; then
-    for root in "${PLAN_ROOTS[@]}"; do
+  if [[ $plan_tier != whole-tree ]]; then
+    for root in "${plan_roots_ref[@]}"; do
       pathspecs+=(":(top,literal)$root")
       if [[ -d $source/$root && ! -L $source/$root ]]; then
         directory_pathspecs+=(":(top,literal)$root")
@@ -695,10 +692,10 @@ discover_candidates() {
   fi
 
   : >"$collapsed_file"
-  if [[ $PLAN_TIER != rooted-literal || ${#directory_pathspecs[@]} -gt 0 ]]; then
+  if [[ $plan_tier != rooted-literal || ${#directory_pathspecs[@]} -gt 0 ]]; then
     count_command discovery_directories
     local -a collapsed_pathspecs=("${pathspecs[@]}")
-    if [[ $PLAN_TIER == rooted-literal ]]; then
+    if [[ $plan_tier == rooted-literal ]]; then
       collapsed_pathspecs=("${directory_pathspecs[@]}")
     fi
     if ! GIT_INDEX_FILE=$selection_index git -C "$source" ls-files --others --ignored --directory -z \
@@ -713,8 +710,8 @@ discover_candidates() {
   local special_index=$TEMP_DIR/special-index
 
   : >"$special_paths_file"
-  if [[ $PLAN_TIER == rooted-literal ]]; then
-    for root in "${PLAN_ROOTS[@]}"; do
+  if [[ $plan_tier == rooted-literal ]]; then
+    for root in "${plan_roots_ref[@]}"; do
       if [[ -e $source/$root || -L $source/$root ]]; then
         if [[ ! -f $source/$root && ! -d $source/$root && ! -L $source/$root ]]; then
           printf '%s\0' "$source/$root" >>"$special_paths_file"
@@ -725,8 +722,14 @@ discover_candidates() {
         fi
       fi
     done
-  elif [[ $PLAN_TIER == rooted-prefix ]]; then
-    for root in "${PLAN_ROOTS[@]}"; do
+  elif [[ $plan_tier == rooted-prefix ]]; then
+    for root in "${plan_literals_ref[@]}"; do
+      if [[ -e $source/$root || -L $source/$root ]] && \
+        [[ ! -f $source/$root && ! -d $source/$root && ! -L $source/$root ]]; then
+        printf '%s\0' "$source/$root" >>"$special_paths_file"
+      fi
+    done
+    for root in "${plan_roots_ref[@]}"; do
       [[ -d $source/$root && ! -L $source/$root ]] || continue
       count_command special_find
       find "$source/$root" -name .git -prune -o \
@@ -748,9 +751,12 @@ discover_candidates() {
   }
 
   local path
+  local -A seen_special=()
   : >"$special_index_input"
   while IFS= read -r -d '' path; do
     path=${path#"$source"/}
+    [[ -z ${seen_special[$path]+set} ]] || continue
+    seen_special[$path]=1
     printf '100644 %s\t%s\0' "$empty_blob" "$path" >>"$special_index_input"
   done <"$special_paths_file"
 
@@ -767,7 +773,7 @@ discover_candidates() {
 }
 
 collect_directory_candidates() {
-  local source=$1 leaves_file=$2 collapsed_file=$3 candidates_file=$4
+  local source=$1 leaves_file=$2 collapsed_file=$3 candidates_file=$4 plan_tier=$5
 
   local -A leaves=() seen=()
   read_null_set "$leaves_file" leaves
@@ -787,7 +793,7 @@ collect_directory_candidates() {
 
   # Exact file targets cannot make their ancestors atomic. For a literal plan,
   # the collapsed traversal already contains every explicit directory target.
-  [[ $PLAN_TIER == rooted-literal ]] && return 0
+  [[ $plan_tier == rooted-literal ]] && return 0
 
   for path in "${!leaves[@]}"; do
     directory=${path%/*}
@@ -867,6 +873,9 @@ accept_direct_directories() {
   local source=$1 worktree=$2
   local candidates_file=$3 direct_directories_file=$4 ignored_file=$5 output_file=$6
   local accepted_file=$7 rejected_file=$8
+  local source_tracked_name=$9 source_descendants_name=${10} source_ignore_case=${11}
+  local destination_tracked_name=${12} destination_descendants_name=${13}
+  local destination_ignore_case=${14}
 
   local -A direct=() ignored=()
   read_null_set "$direct_directories_file" direct
@@ -885,7 +894,9 @@ accept_direct_directories() {
       continue
     fi
 
-    if has_initial_tracked_conflict "$directory"; then
+    if has_tracked_conflict "$directory" "$source_tracked_name" "$source_descendants_name" \
+      "$source_ignore_case" "$destination_tracked_name" "$destination_descendants_name" \
+      "$destination_ignore_case"; then
       warn "tracked path conflict: $directory"
       rejected+=("$directory")
       printf '%s\0' "$directory" >>"$rejected_file"
@@ -910,6 +921,9 @@ accept_leaf_entries() {
   local source=$1 worktree=$2
   local leaves_file=$3 ignored_file=$4 accepted_directories_file=$5
   local rejected_directories_file=$6 output_file=$7
+  local source_tracked_name=$8 source_descendants_name=$9 source_ignore_case=${10}
+  local destination_tracked_name=${11} destination_descendants_name=${12}
+  local destination_ignore_case=${13}
 
   local -A ignored=()
   read_null_set "$ignored_file" ignored
@@ -928,7 +942,9 @@ accept_leaf_entries() {
       continue
     fi
 
-    if has_initial_tracked_conflict "$path"; then
+    if has_tracked_conflict "$path" "$source_tracked_name" "$source_descendants_name" \
+      "$source_ignore_case" "$destination_tracked_name" "$destination_descendants_name" \
+      "$destination_ignore_case"; then
       warn "tracked path conflict: $path"
       continue
     fi
@@ -955,7 +971,13 @@ select_entries() {
   ((${#include_args[@]})) || return 0
 
   phase_start=${EPOCHREALTIME:-0}
-  plan_selection "$source" "$@"
+  local plan_tier
+  # plan_literals is passed by name to discovery for mixed plans.
+  # shellcheck disable=SC2034
+  local -a plan_roots=() plan_literals=()
+  plan_selection "$source" plan_tier plan_roots plan_literals "$@"
+  DIAGNOSTIC_PLAN_TIER=$plan_tier
+  printf '%s\0' "${plan_roots[@]}" >"$TEMP_DIR/plan-roots"
   record_phase planning "$phase_start"
 
   local selection_index=$TEMP_DIR/selection-index
@@ -968,18 +990,20 @@ select_entries() {
   local accepted_directories_file=$TEMP_DIR/accepted-directories
   local rejected_directories_file=$TEMP_DIR/rejected-directories
 
-  if [[ $PLAN_TIER != whole-tree && ${#PLAN_ROOTS[@]} -eq 0 ]]; then
+  if [[ $plan_tier != whole-tree && ${#plan_roots[@]} -eq 0 ]]; then
     : >"$output_file"
     return 0
   fi
 
   phase_start=${EPOCHREALTIME:-0}
   discover_candidates "$source" "$selection_index" "$leaves_file" "$collapsed_file" \
+    "$plan_tier" plan_roots plan_literals \
     "${include_args[@]}" || return 1
   record_phase discovery "$phase_start"
 
   phase_start=${EPOCHREALTIME:-0}
-  collect_directory_candidates "$source" "$leaves_file" "$collapsed_file" "$candidates_file"
+  collect_directory_candidates "$source" "$leaves_file" "$collapsed_file" "$candidates_file" \
+    "$plan_tier"
 
   classify_direct_directories "$source" "$selection_index" "$probe_file" "$candidates_file" \
     "$direct_directories_file" "${include_args[@]}" || return 1
@@ -991,29 +1015,43 @@ select_entries() {
   record_phase standard_ignores "$phase_start"
 
   phase_start=${EPOCHREALTIME:-0}
-  snapshot_index "$source" source SOURCE_TRACKED SOURCE_DESCENDANTS SOURCE_IGNORE_CASE || return 1
-  snapshot_index "$worktree" destination DESTINATION_TRACKED DESTINATION_DESCENDANTS \
-    DESTINATION_IGNORE_CASE || return 1
+  # These local sets are passed by name to the acceptance phase.
+  # shellcheck disable=SC2034
+  local -A source_tracked=() source_descendants=()
+  # shellcheck disable=SC2034
+  local -A destination_tracked=() destination_descendants=()
+  local source_ignore_case=false destination_ignore_case=false
+  snapshot_index "$source" source source_tracked source_descendants source_ignore_case || return 1
+  snapshot_index "$worktree" destination destination_tracked destination_descendants \
+    destination_ignore_case || return 1
   record_phase index_snapshots "$phase_start"
 
   : >"$output_file"
   phase_start=${EPOCHREALTIME:-0}
   accept_direct_directories "$source" "$worktree" \
     "$candidates_file" "$direct_directories_file" "$ignored_file" "$output_file" \
-    "$accepted_directories_file" "$rejected_directories_file"
+    "$accepted_directories_file" "$rejected_directories_file" \
+    source_tracked source_descendants "$source_ignore_case" \
+    destination_tracked destination_descendants "$destination_ignore_case"
 
   accept_leaf_entries "$source" "$worktree" \
     "$leaves_file" "$ignored_file" "$accepted_directories_file" "$rejected_directories_file" \
-    "$output_file"
+    "$output_file" source_tracked source_descendants "$source_ignore_case" \
+    destination_tracked destination_descendants "$destination_ignore_case"
   record_phase safety "$phase_start"
 }
 
 install_entry() {
   local mode=$1 source=$2 worktree=$3 entry=$4
+  local source_tracked_name=$5 source_descendants_name=$6 source_ignore_case=$7
+  local destination_tracked_name=$8 destination_descendants_name=$9
+  local destination_ignore_case=${10}
   local source_path=$source/$entry
   local destination=$worktree/$entry
 
-  if has_fresh_tracked_conflict "$entry"; then
+  if has_tracked_conflict "$entry" "$source_tracked_name" "$source_descendants_name" \
+    "$source_ignore_case" "$destination_tracked_name" "$destination_descendants_name" \
+    "$destination_ignore_case"; then
     warn "tracked path conflict: $entry"
     return 1
   fi
@@ -1130,16 +1168,24 @@ main() {
   ((${#entries[@]})) || return 0
 
   local phase_start=${EPOCHREALTIME:-0}
-  snapshot_index "$source" source FRESH_SOURCE_TRACKED FRESH_SOURCE_DESCENDANTS \
-    FRESH_SOURCE_IGNORE_CASE || return 0
-  snapshot_index "$worktree" destination FRESH_DESTINATION_TRACKED \
-    FRESH_DESTINATION_DESCENDANTS FRESH_DESTINATION_IGNORE_CASE || return 0
+  # These local sets are passed by name to the installation phase.
+  # shellcheck disable=SC2034
+  local -A fresh_source_tracked=() fresh_source_descendants=()
+  # shellcheck disable=SC2034
+  local -A fresh_destination_tracked=() fresh_destination_descendants=()
+  local fresh_source_ignore_case=false fresh_destination_ignore_case=false
+  snapshot_index "$source" source fresh_source_tracked fresh_source_descendants \
+    fresh_source_ignore_case || return 0
+  snapshot_index "$worktree" destination fresh_destination_tracked \
+    fresh_destination_descendants fresh_destination_ignore_case || return 0
   record_phase recheck "$phase_start"
 
   local entry created=0 skipped=0
   phase_start=${EPOCHREALTIME:-0}
   for entry in "${entries[@]}"; do
-    if install_entry "$mode" "$source" "$worktree" "$entry"; then
+    if install_entry "$mode" "$source" "$worktree" "$entry" \
+      fresh_source_tracked fresh_source_descendants "$fresh_source_ignore_case" \
+      fresh_destination_tracked fresh_destination_descendants "$fresh_destination_ignore_case"; then
       created=$((created + 1))
     else
       skipped=$((skipped + 1))
