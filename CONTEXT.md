@@ -4,14 +4,14 @@ Worktree Include selects local repository content that should be available in a 
 
 ## Language
 
-**Include pattern**:
-A Git-ignore pattern read from an ordered include file.
+**Include declaration**:
+A repository-relative literal path declared in `.worktreeinclude`. It identifies one leaf entry in the main checkout.
+_Avoid_: Include pattern
 
-**Selected path**:
-A source path selected by the combined include patterns after Git applies last-match-wins ordering.
+**Eligible leaf entry**:
+A declared leaf entry that standard Git ignore rules ignore and that Git does not track in either relevant checkout.
+_Avoid_: Selected path, eligible path
 
-**Eligible path**:
-A selected path that standard Git ignore rules also ignore and that Git does not track.
-
-**Installable entry**:
-An eligible file, symlink, or atomic directory that passes the plugin's safety checks.
+**Leaf entry**:
+A repository-relative source item that is either a regular file or a symlink. A symlink is the entry itself, regardless of its target.
+_Avoid_: File, directory, installable entry
