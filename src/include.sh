@@ -20,7 +20,7 @@ if [[ ${BASH_VERSINFO[0]:-0} -lt 5 ]]; then
 fi
 
 # ShellCheck cannot see that the EXIT trap invokes this function.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 cleanup() {
   [[ -z ${TEMP_DIR:-} ]] || rm -rf "$TEMP_DIR"
 }
