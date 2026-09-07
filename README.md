@@ -106,7 +106,7 @@ The declared leaf may be a symlink, including a broken symlink or one that point
 
 An ancestor of the declared leaf must be a directory, not a symlink. For example, the plugin rejects `config/local.env` when `config` is a symlink.
 
-In symlink mode, a source symlink produces a symlink chain. In copy mode, `cp -P` preserves the source symlink and its original target text.
+In symlink mode, a source symlink produces a symlink chain: a symlink in the new worktree points to the source symlink rather than to its target. In copy mode, `cp -P` preserves the source symlink and its original target text.
 
 ## Safety
 
