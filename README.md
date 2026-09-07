@@ -1,8 +1,8 @@
 # Herdr Worktree Include
 
-Herdr Worktree Include is a [Herdr](https://herdr.dev) plugin that symlinks or copies selected local files from a repository's main checkout into new linked worktrees.
+Herdr Worktree Include is a [Herdr](https://herdr.dev) plugin that symlinks or copies selected leaf entries from a repository's main checkout into new linked worktrees.
 
-It is intended for Git-ignored environment and configuration files that should be available in each worktree without being committed.
+It is intended for Git-ignored environment and configuration leaf entries that should be available in each worktree without being committed.
 
 ## Requirements
 
@@ -28,7 +28,7 @@ herdr plugin link /path/to/herdr-worktree-include
 
 ## Usage
 
-Create `.worktreeinclude` in the main checkout and list repository-relative files:
+Create `.worktreeinclude` in the main checkout and list repository-relative leaf entries:
 
 ```text
 .env
@@ -49,7 +49,7 @@ The plugin handles only worktrees created after installation. It does not modify
 
 ## Include format
 
-Claude Code defines `.worktreeinclude` as a Git-ignore pattern file. This plugin reads the same file but deliberately supports only a literal leaf subset aimed at environment and configuration files.
+Claude Code defines `.worktreeinclude` as a Git-ignore pattern file. This plugin reads the same file but deliberately supports only a literal leaf subset aimed at environment and configuration leaf entries.
 
 A supported declaration:
 
@@ -81,7 +81,7 @@ The plugin warns and ignores unsupported patterns. This lets one `.worktreeinclu
 
 A slashless declaration has narrower meaning here than it has in Git-ignore syntax. `.env` means only the repository-root `.env`, not every `.env` at any depth. Use the full repository-relative path for nested files.
 
-Missing declarations, tracked files, and files not ignored by normal Git rules are quietly omitted. An existing declaration that names a directory or special file is warned about and skipped.
+Missing declarations, tracked leaf entries, and declarations not ignored by normal Git rules are quietly omitted. An existing declaration that names a directory or special file is warned about and skipped.
 
 The plugin reads the complete include file and validates every candidate before it starts installing entries. Selecting `.worktreeinclude` itself is allowed.
 

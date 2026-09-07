@@ -157,6 +157,30 @@ test_copy_mode_copies_files_and_preserves_symlinks() {
   assert_output_contains "copy 3, skipped 0"
 }
 
+test_copy_failure_preserves_partial_destination() {
+  local real_cp
+  real_cp=$(command -v cp) || return 1
+  mkdir "$TEST_ROOT/bin"
+  printf 'mode=copy\n' >"$REPO/.herdr-worktree-include"
+  printf 'local.env\n' >"$REPO/.worktreeinclude"
+  printf 'source\n' >"$REPO/local.env"
+  ignore_locally 'local.env'
+  # Simulate cp writing part of the destination before failing.
+  # shellcheck disable=SC2016
+  printf '#!/usr/bin/env bash\nif [[ $1 == -P ]]; then\n  destination=${@: -1}\n  printf partial >"$destination"\n  exit 1\nfi\nexec "$REAL_CP" "$@"\n' >"$TEST_ROOT/bin/cp"
+  chmod +x "$TEST_ROOT/bin/cp"
+
+  OUTPUT=$(REAL_CP="$real_cp" PATH="$TEST_ROOT/bin:$PATH" \
+    HERDR_PLUGIN_EVENT_JSON="$EVENT_JSON" "$PLUGIN_BASH" "$PLUGIN" 2>&1)
+  STATUS=$?
+
+  [[ $STATUS -eq 0 ]] || fail "plugin exited $STATUS"
+  assert_file "$WORKTREE/local.env" || return 1
+  assert_content "$WORKTREE/local.env" partial || return 1
+  assert_output_contains "copy failed: partial destination may remain" || return 1
+  assert_output_contains "copy 0, skipped 1"
+}
+
 test_leading_slash_and_duplicate_declarations() {
   printf '/.env\n.env\n' >"$REPO/.worktreeinclude"
   printf 'secret\n' >"$REPO/.env"
@@ -229,6 +253,17 @@ test_standard_git_ignore_sources_are_used() {
   assert_symlink "$WORKTREE/root.env" || return 1
   assert_symlink "$WORKTREE/nested/nested.env" || return 1
   assert_symlink "$WORKTREE/config/local.env"
+}
+
+test_global_git_excludes_are_used() {
+  printf 'global.env\n' >"$TEST_ROOT/global-ignore"
+  git -C "$REPO" config core.excludesFile "$TEST_ROOT/global-ignore"
+  printf 'global\n' >"$REPO/global.env"
+  printf 'global.env\n' >"$REPO/.worktreeinclude"
+
+  run_plugin
+
+  assert_symlink "$WORKTREE/global.env"
 }
 
 test_directories_and_special_files_are_warned_and_skipped() {
@@ -454,11 +489,13 @@ done
 
 run_test "nested leaves with tracked siblings" test_nested_leaf_with_tracked_siblings
 run_test "copy mode preserves leaf symlinks" test_copy_mode_copies_files_and_preserves_symlinks
+run_test "copy failure preserves partial destination" test_copy_failure_preserves_partial_destination
 run_test "leading slash and duplicate declarations" test_leading_slash_and_duplicate_declarations
 run_test "shared files ignore unsupported Git patterns" test_shared_file_ignores_unsupported_gitignore_patterns
 run_test "invalid literal paths are ignored" test_invalid_literal_paths_are_ignored
 run_test "ordinary ineligible declarations are quiet" test_missing_tracked_and_nonignored_declarations_are_quietly_omitted
 run_test "standard Git ignore sources are used" test_standard_git_ignore_sources_are_used
+run_test "global Git excludes are used" test_global_git_excludes_are_used
 run_test "directories and special files are skipped" test_directories_and_special_files_are_warned_and_skipped
 run_test "source symlinked parents are rejected" test_source_symlinked_parent_is_rejected
 run_test "leaf symlinks to directories are allowed" test_leaf_symlink_to_directory_is_allowed
