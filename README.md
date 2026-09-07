@@ -1,6 +1,6 @@
 # Herdr Worktree Include
 
-[Herdr](https://herdr.dev) plugin that links or copies selected leaf entries from a repository's main checkout into new linked worktrees. Use it for ignored environment and configuration files that should be present in every worktree without being committed.
+[Herdr](https://herdr.dev) plugin that links or copies selected files from a repository's main checkout into new linked worktrees. Use it for ignored environment and configuration files that should be present in every worktree without being committed.
 
 ## Requirements
 
@@ -26,7 +26,7 @@ herdr plugin link /path/to/herdr-worktree-include
 
 ## Usage
 
-Create `.worktreeinclude` in the main checkout. List repository-relative leaf paths:
+Create `.worktreeinclude` in the main checkout. List repository-relative file paths:
 
 ```text
 .env
@@ -47,9 +47,9 @@ The plugin processes worktrees created after installation. It does not change ex
 
 ## Include format
 
-Claude Code treats `.worktreeinclude` as a Git-ignore pattern file. This plugin reads the same file but accepts literal leaf paths only.
+Claude Code treats `.worktreeinclude` as a Git-ignore pattern file. This plugin reads the same file but accepts literal leaf paths only. Leaf paths are those that point to regular files or symlinks, not directories.
 
-A supported declaration:
+A supported declaration of a leaf path:
 
 - Is a literal path relative to the repository root.
 - May start with one `/`, which anchors it at the root.
@@ -75,11 +75,11 @@ cache/
 **/secrets.json
 ```
 
-The plugin warns about and ignores unsupported patterns. One file can therefore contain richer Claude Code rules alongside the literal paths this plugin uses.
+The plugin warns about and ignores unsupported patterns. One `.worktreeinclude` file can therefore contain richer Claude Code rules alongside the literal paths this plugin uses.
 
 Here, `.env` means only the repository-root `.env`. It does not match `.env` in nested directories. Use the full repository-relative path for nested files.
 
-Missing declarations, tracked leaf entries, and declarations that Git does not ignore are omitted without a warning. Existing directories and special files produce a warning and are skipped.
+Missing declarations, entries that point to files that Git tracks, and declarations that Git does not ignore are omitted without a warning. Existing directories and special files produce a warning and are skipped.
 
 The plugin validates every declaration before installing anything. Selecting `.worktreeinclude` itself is allowed.
 
@@ -93,7 +93,7 @@ mode=copy
 
 `mode` is the only supported setting, and it may appear once:
 
-- `mode=symlink` creates an absolute link to the leaf in the main checkout. This is the default.
+- `mode=symlink` creates an absolute link to the file in the main checkout. This is the default.
 - `mode=copy` copies regular files and preserves source symlinks without following them.
 
 An unsupported key, including the former `include_file` setting, invalidates the configuration. The plugin warns and installs nothing for that worktree.
@@ -126,7 +126,7 @@ The plugin rejects an entry with a warning if either index contains:
 - A tracked path below the declared leaf.
 - A tracked file, symlink, or gitlink above the declared leaf.
 
-Tracked siblings are allowed. `src/django/.env` remains eligible when Git tracks other files under `src/django`.
+Tracked siblings are allowed. E.g. `src/.env` remains eligible when Git tracks other files under `src/`.
 
 Index checks include tracked paths absent from disk, including sparse-checkout and index-only entries. They respect each checkout's `core.ignoreCase` setting.
 
