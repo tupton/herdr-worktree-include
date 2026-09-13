@@ -144,7 +144,7 @@ Run the integration suite:
 bash tests/integration.sh
 ```
 
-Selection tests source `src/include.sh` and exercise Eligible leaf entry selection through its internal module interface. Installation and event-handling tests execute the script through the same process interface Herdr uses.
+Selection and tracked-conflict policy tests source `src/include.sh` and exercise their respective internal module interfaces. Installation and event-handling tests execute the script through the same process interface Herdr uses.
 
 Run one group by setting `TEST_FILTER` to part of its name:
 

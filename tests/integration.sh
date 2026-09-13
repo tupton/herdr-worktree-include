@@ -9,6 +9,7 @@ TEST_ROOT=
 passed=0
 failed=0
 declare -a ELIGIBLE_ENTRIES=()
+declare -a CONFLICT_FREE_ENTRIES=()
 
 # shellcheck source=../src/include.sh
 # shellcheck disable=SC1091 # ShellCheck does not resolve the computed root.
@@ -57,6 +58,13 @@ assert_not_selected() {
   local unexpected=$1 entry
   for entry in "${ELIGIBLE_ENTRIES[@]}"; do
     [[ $entry != "$unexpected" ]] || fail "unexpected Eligible leaf entry: $unexpected"
+  done
+}
+
+assert_tracked_conflict() {
+  local unexpected=$1 entry
+  for entry in "${CONFLICT_FREE_ENTRIES[@]}"; do
+    [[ $entry != "$unexpected" ]] || fail "unexpected conflict-free entry: $unexpected"
   done
 }
 
@@ -121,6 +129,24 @@ run_selection() {
   fi
   OUTPUT=$(<"$diagnostics")
   [[ $STATUS -eq 0 ]] || fail "selection exited $STATUS: $OUTPUT"
+}
+
+run_tracked_filter() {
+  local diagnostics=$TEST_ROOT/tracked-filter.stderr serialized=
+  CONFLICT_FREE_ENTRIES=()
+  if serialized=$(
+    _worktree_include_filter_tracked_conflicts \
+      "$REPO" "$WORKTREE" "$TEST_ROOT" "$@" 2>"$diagnostics"
+  ); then
+    STATUS=0
+  else
+    STATUS=$?
+  fi
+  if [[ -n $serialized ]]; then
+    mapfile -t CONFLICT_FREE_ENTRIES <<<"$serialized"
+  fi
+  OUTPUT=$(<"$diagnostics")
+  [[ $STATUS -eq 0 ]] || fail "tracked-conflict filtering exited $STATUS: $OUTPUT"
 }
 
 run_test() {
@@ -365,49 +391,86 @@ test_structural_destination_conflicts_are_warned() {
   assert_output_contains "tracked path conflict: config/local.env"
 }
 
-test_structural_source_conflicts_are_warned() {
-  printf 'bundle\n.env\n' >"$REPO/.worktreeinclude"
-  ln -s nowhere "$REPO/bundle"
-  printf 'secret\n' >"$REPO/.env"
-  ignore_locally 'bundle'
-  ignore_locally '.env'
-  add_index_entry "$REPO" bundle/child
+test_tracked_state_conflict_matrix() {
+  add_index_entry "$REPO" source-exact
+  add_index_entry "$REPO" source-below/child
+  add_index_entry "$REPO" source-above
+  add_index_entry "$REPO" source-sibling/tracked
+  add_index_entry "$WORKTREE" destination-exact
+  add_index_entry "$WORKTREE" destination-below/child
+  add_index_entry "$WORKTREE" destination-above
+  add_index_entry "$WORKTREE" destination-sibling/tracked
 
-  run_selection || return 1
+  run_tracked_filter \
+    source-exact source-below source-above/child source-sibling/local \
+    destination-exact destination-below destination-above/child \
+    destination-sibling/local clear || return 1
 
-  assert_not_selected "bundle" || return 1
-  assert_selected ".env" || return 1
-  assert_output_contains "tracked path conflict: bundle"
+  assert_tracked_conflict "source-exact" || return 1
+  assert_tracked_conflict "source-below" || return 1
+  assert_tracked_conflict "source-above/child" || return 1
+  assert_tracked_conflict "destination-exact" || return 1
+  assert_tracked_conflict "destination-below" || return 1
+  assert_tracked_conflict "destination-above/child" || return 1
+  [[ ${#CONFLICT_FREE_ENTRIES[@]} -eq 3 ]] || fail "expected three conflict-free entries" || return 1
+  [[ ${CONFLICT_FREE_ENTRIES[0]} == source-sibling/local ]] || fail "source sibling order changed" || return 1
+  [[ ${CONFLICT_FREE_ENTRIES[1]} == destination-sibling/local ]] || fail "destination sibling order changed" || return 1
+  [[ ${CONFLICT_FREE_ENTRIES[2]} == clear ]] || fail "clear entry order changed" || return 1
+  assert_output_excludes "tracked path conflict: source-exact" || return 1
+  assert_output_contains "tracked path conflict: source-below" || return 1
+  assert_output_contains "tracked path conflict: source-above/child" || return 1
+  assert_output_contains "tracked path conflict: destination-exact" || return 1
+  assert_output_contains "tracked path conflict: destination-below" || return 1
+  assert_output_contains "tracked path conflict: destination-above/child"
+}
+
+test_tracked_state_uses_each_checkout_case_setting() {
+  git -C "$REPO" config extensions.worktreeConfig true
+  git -C "$REPO" config --worktree core.ignoreCase true
+  git -C "$WORKTREE" config --worktree core.ignoreCase false
+  add_index_entry "$REPO" CONFIG/child
+  add_index_entry "$WORKTREE" OTHER/child
+
+  run_tracked_filter config other clear || return 1
+
+  assert_tracked_conflict "config" || return 1
+  [[ ${#CONFLICT_FREE_ENTRIES[@]} -eq 2 ]] || fail "expected two conflict-free entries" || return 1
+  [[ ${CONFLICT_FREE_ENTRIES[0]} == other ]] || fail "destination used source case setting" || return 1
+  [[ ${CONFLICT_FREE_ENTRIES[1]} == clear ]] || fail "clear entry order changed" || return 1
+  assert_output_contains "tracked path conflict: config" || return 1
+  assert_output_excludes "tracked path conflict: other"
+}
+
+test_tracked_state_failure_has_no_partial_output() {
+  local diagnostics=$TEST_ROOT/tracked-filter.stderr serialized='' status
+  mv "$WORKTREE/.git" "$WORKTREE/.git-disabled"
+
+  if serialized=$(
+    _worktree_include_filter_tracked_conflicts \
+      "$REPO" "$WORKTREE" "$TEST_ROOT" clear 2>"$diagnostics"
+  ); then
+    fail "expected tracked-conflict filtering failure"
+    return 1
+  else
+    status=$?
+  fi
+
+  [[ $status -eq 1 ]] || fail "tracked-conflict filtering exited $status" || return 1
+  [[ -z $serialized ]] || fail "tracked-conflict failure produced partial output: $serialized" || return 1
+  OUTPUT=$(<"$diagnostics")
+  assert_output_contains "could not inspect tracked paths, skipping"
 }
 
 test_case_insensitive_structural_conflicts_are_warned() {
-  printf 'config\n.env\n' >"$REPO/.worktreeinclude"
-  ln -s nowhere "$REPO/config"
-  printf 'secret\n' >"$REPO/.env"
-  ignore_locally 'config'
-  ignore_locally '.env'
   git -C "$WORKTREE" config core.ignoreCase true
   add_index_entry "$WORKTREE" CONFIG/child
 
-  run_selection || return 1
+  run_tracked_filter config clear || return 1
 
-  assert_not_selected "config" || return 1
-  assert_selected ".env" || return 1
+  assert_tracked_conflict "config" || return 1
+  [[ ${#CONFLICT_FREE_ENTRIES[@]} -eq 1 ]] || fail "expected one conflict-free entry" || return 1
+  [[ ${CONFLICT_FREE_ENTRIES[0]} == clear ]] || fail "expected clear entry" || return 1
   assert_output_contains "tracked path conflict: config"
-}
-
-test_tracked_siblings_are_not_structural_conflicts() {
-  mkdir -p "$REPO/config"
-  printf 'tracked\n' >"$REPO/config/app.json"
-  git -C "$REPO" add config/app.json
-  git -C "$REPO" commit -qm "Add tracked sibling"
-  printf 'local\n' >"$REPO/config/local.json"
-  printf 'config/local.json\n' >"$REPO/.worktreeinclude"
-  ignore_locally 'config/local.json'
-
-  run_selection || return 1
-
-  assert_selected "config/local.json"
 }
 
 test_existing_destination_is_preserved() {
@@ -592,9 +655,10 @@ run_test "directories and special files are skipped" test_directories_and_specia
 run_test "source symlinked parents are rejected" test_source_symlinked_parent_is_rejected
 run_test "leaf symlinks to directories are allowed" test_leaf_symlink_to_directory_is_allowed
 run_test "structural destination conflicts are warned" test_structural_destination_conflicts_are_warned
-run_test "structural source conflicts are warned" test_structural_source_conflicts_are_warned
+run_test "tracked state conflict matrix" test_tracked_state_conflict_matrix
+run_test "tracked state uses each checkout case setting" test_tracked_state_uses_each_checkout_case_setting
+run_test "tracked state failure has no partial output" test_tracked_state_failure_has_no_partial_output
 run_test "case-insensitive structural conflicts are warned" test_case_insensitive_structural_conflicts_are_warned
-run_test "tracked siblings are allowed" test_tracked_siblings_are_not_structural_conflicts
 run_test "existing destinations are preserved" test_existing_destination_is_preserved
 run_test "destination validation finishes before installation" test_destination_validation_finishes_before_installation
 run_test "case-insensitive declarations resolve source spelling" test_case_insensitive_declaration_resolves_source_spelling
