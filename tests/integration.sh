@@ -8,6 +8,11 @@ PLUGIN_BASH=${PLUGIN_BASH:-bash}
 TEST_ROOT=
 passed=0
 failed=0
+declare -a ELIGIBLE_ENTRIES=()
+
+# shellcheck source=../src/include.sh
+# shellcheck disable=SC1091 # ShellCheck does not resolve the computed root.
+source "$PLUGIN"
 
 cleanup() {
   [[ -z $TEST_ROOT ]] || rm -rf "$TEST_ROOT"
@@ -38,6 +43,21 @@ assert_missing() {
   if [[ -e $1 || -L $1 ]]; then
     fail "expected missing path: $1"
   fi
+}
+
+assert_selected() {
+  local expected=$1 entry
+  for entry in "${ELIGIBLE_ENTRIES[@]}"; do
+    [[ $entry != "$expected" ]] || return 0
+  done
+  fail "expected Eligible leaf entry: $expected"
+}
+
+assert_not_selected() {
+  local unexpected=$1 entry
+  for entry in "${ELIGIBLE_ENTRIES[@]}"; do
+    [[ $entry != "$unexpected" ]] || fail "unexpected Eligible leaf entry: $unexpected"
+  done
 }
 
 assert_content() {
@@ -88,6 +108,19 @@ run_plugin() {
   OUTPUT=$(HERDR_PLUGIN_EVENT_JSON="$EVENT_JSON" "$PLUGIN_BASH" "$PLUGIN" 2>&1)
   STATUS=$?
   return 0
+}
+
+run_selection() {
+  local diagnostics=$TEST_ROOT/selection.stderr
+  ELIGIBLE_ENTRIES=()
+  if _worktree_include_select_eligible_leaf_entries \
+    "$REPO" "$WORKTREE" ELIGIBLE_ENTRIES 2>"$diagnostics"; then
+    STATUS=0
+  else
+    STATUS=$?
+  fi
+  OUTPUT=$(<"$diagnostics")
+  [[ $STATUS -eq 0 ]] || fail "selection exited $STATUS: $OUTPUT"
 }
 
 run_test() {
@@ -186,10 +219,10 @@ test_leading_slash_and_duplicate_declarations() {
   printf 'secret\n' >"$REPO/.env"
   ignore_locally '.env'
 
-  run_plugin
+  run_selection || return 1
 
-  assert_symlink "$WORKTREE/.env" || return 1
-  assert_output_contains "symlink 1, skipped 0"
+  [[ ${#ELIGIBLE_ENTRIES[@]} -eq 1 ]] || fail "expected one Eligible leaf entry"
+  assert_selected ".env"
 }
 
 test_shared_file_ignores_unsupported_gitignore_patterns() {
@@ -200,10 +233,10 @@ test_shared_file_ignores_unsupported_gitignore_patterns() {
   ignore_locally '.env'
   ignore_locally '.env.local'
 
-  run_plugin
+  run_selection || return 1
 
-  assert_symlink "$WORKTREE/.env" || return 1
-  assert_missing "$WORKTREE/.env.local" || return 1
+  assert_selected ".env" || return 1
+  assert_not_selected ".env.local" || return 1
   assert_output_contains ".worktreeinclude:2: unsupported pattern, ignoring" || return 1
   assert_output_contains ".worktreeinclude:3: unsupported pattern, ignoring" || return 1
   assert_output_contains ".worktreeinclude:4: unsupported pattern, ignoring" || return 1
@@ -216,9 +249,9 @@ test_invalid_literal_paths_are_ignored() {
   printf 'valid\n' >"$REPO/valid.env"
   ignore_locally 'valid.env'
 
-  run_plugin
+  run_selection || return 1
 
-  assert_symlink "$WORKTREE/valid.env" || return 1
+  assert_selected "valid.env" || return 1
   assert_output_contains ".worktreeinclude:1: unsupported pattern, ignoring" || return 1
   assert_output_contains ".worktreeinclude:2: unsupported pattern, ignoring" || return 1
   assert_output_contains ".worktreeinclude:3: unsupported pattern, ignoring" || return 1
@@ -229,10 +262,9 @@ test_missing_tracked_and_nonignored_declarations_are_quietly_omitted() {
   printf 'missing.env\nREADME\nvisible.env\n' >"$REPO/.worktreeinclude"
   printf 'visible\n' >"$REPO/visible.env"
 
-  run_plugin
+  run_selection || return 1
 
-  assert_missing "$WORKTREE/missing.env" || return 1
-  assert_missing "$WORKTREE/visible.env" || return 1
+  [[ ${#ELIGIBLE_ENTRIES[@]} -eq 0 ]] || fail "expected no Eligible leaf entries"
   [[ $OUTPUT == '' ]] || fail "expected no output, got: $OUTPUT"
 }
 
@@ -248,11 +280,11 @@ test_standard_git_ignore_sources_are_used() {
   ignore_locally 'config/local.env'
   printf 'root.env\nnested/nested.env\nconfig/local.env\n' >"$REPO/.worktreeinclude"
 
-  run_plugin
+  run_selection || return 1
 
-  assert_symlink "$WORKTREE/root.env" || return 1
-  assert_symlink "$WORKTREE/nested/nested.env" || return 1
-  assert_symlink "$WORKTREE/config/local.env"
+  assert_selected "root.env" || return 1
+  assert_selected "nested/nested.env" || return 1
+  assert_selected "config/local.env"
 }
 
 test_global_git_excludes_are_used() {
@@ -261,9 +293,9 @@ test_global_git_excludes_are_used() {
   printf 'global\n' >"$REPO/global.env"
   printf 'global.env\n' >"$REPO/.worktreeinclude"
 
-  run_plugin
+  run_selection || return 1
 
-  assert_symlink "$WORKTREE/global.env"
+  assert_selected "global.env"
 }
 
 test_directories_and_special_files_are_warned_and_skipped() {
@@ -275,11 +307,11 @@ test_directories_and_special_files_are_warned_and_skipped() {
   ignore_locally 'runtime.pipe'
   ignore_locally '.env'
 
-  run_plugin
+  run_selection || return 1
 
-  assert_missing "$WORKTREE/cache" || return 1
-  assert_missing "$WORKTREE/runtime.pipe" || return 1
-  assert_symlink "$WORKTREE/.env" || return 1
+  assert_not_selected "cache" || return 1
+  assert_not_selected "runtime.pipe" || return 1
+  assert_selected ".env" || return 1
   assert_output_contains "not a regular file or symlink: cache" || return 1
   assert_output_contains "not a regular file or symlink: runtime.pipe"
 }
@@ -293,10 +325,10 @@ test_source_symlinked_parent_is_rejected() {
   ignore_locally 'config/local.env'
   ignore_locally '.env'
 
-  run_plugin
+  run_selection || return 1
 
-  assert_missing "$WORKTREE/config/local.env" || return 1
-  assert_symlink "$WORKTREE/.env" || return 1
+  assert_not_selected "config/local.env" || return 1
+  assert_selected ".env" || return 1
   assert_output_contains "source has a symlink or non-directory parent: config/local.env"
 }
 
@@ -307,10 +339,9 @@ test_leaf_symlink_to_directory_is_allowed() {
   printf 'external\n' >"$REPO/.worktreeinclude"
   ignore_locally 'external'
 
-  run_plugin
+  run_selection || return 1
 
-  assert_symlink "$WORKTREE/external" || return 1
-  assert_link_target "$WORKTREE/external" "$REPO/external"
+  assert_selected "external"
 }
 
 test_structural_destination_conflicts_are_warned() {
@@ -325,11 +356,11 @@ test_structural_destination_conflicts_are_warned() {
   add_index_entry "$WORKTREE" bundle/child
   add_index_entry "$WORKTREE" config
 
-  run_plugin
+  run_selection || return 1
 
-  assert_missing "$WORKTREE/bundle" || return 1
-  assert_missing "$WORKTREE/config/local.env" || return 1
-  assert_symlink "$WORKTREE/.env" || return 1
+  assert_not_selected "bundle" || return 1
+  assert_not_selected "config/local.env" || return 1
+  assert_selected ".env" || return 1
   assert_output_contains "tracked path conflict: bundle" || return 1
   assert_output_contains "tracked path conflict: config/local.env"
 }
@@ -342,10 +373,10 @@ test_structural_source_conflicts_are_warned() {
   ignore_locally '.env'
   add_index_entry "$REPO" bundle/child
 
-  run_plugin
+  run_selection || return 1
 
-  assert_missing "$WORKTREE/bundle" || return 1
-  assert_symlink "$WORKTREE/.env" || return 1
+  assert_not_selected "bundle" || return 1
+  assert_selected ".env" || return 1
   assert_output_contains "tracked path conflict: bundle"
 }
 
@@ -358,10 +389,10 @@ test_case_insensitive_structural_conflicts_are_warned() {
   git -C "$WORKTREE" config core.ignoreCase true
   add_index_entry "$WORKTREE" CONFIG/child
 
-  run_plugin
+  run_selection || return 1
 
-  assert_missing "$WORKTREE/config" || return 1
-  assert_symlink "$WORKTREE/.env" || return 1
+  assert_not_selected "config" || return 1
+  assert_selected ".env" || return 1
   assert_output_contains "tracked path conflict: config"
 }
 
@@ -374,9 +405,9 @@ test_tracked_siblings_are_not_structural_conflicts() {
   printf 'config/local.json\n' >"$REPO/.worktreeinclude"
   ignore_locally 'config/local.json'
 
-  run_plugin
+  run_selection || return 1
 
-  assert_symlink "$WORKTREE/config/local.json"
+  assert_selected "config/local.json"
 }
 
 test_existing_destination_is_preserved() {
@@ -415,10 +446,9 @@ test_case_insensitive_declaration_resolves_source_spelling() {
   printf 'Config/Local.env\n' >>"$REPO/.git/info/exclude"
   git -C "$REPO" config core.ignoreCase true
 
-  run_plugin
+  run_selection || return 1
 
-  assert_symlink "$WORKTREE/Config/Local.env" || return 1
-  assert_link_target "$WORKTREE/Config/Local.env" "$REPO/Config/Local.env"
+  assert_selected "Config/Local.env"
 }
 
 test_unsafe_destination_parent_is_skipped() {
@@ -438,9 +468,9 @@ test_include_file_can_select_itself() {
   printf '.worktreeinclude\n' >"$REPO/.worktreeinclude"
   ignore_locally '.worktreeinclude'
 
-  run_plugin
+  run_selection || return 1
 
-  assert_symlink "$WORKTREE/.worktreeinclude"
+  assert_selected ".worktreeinclude"
 }
 
 test_obsolete_include_file_config_aborts_run() {
@@ -480,6 +510,67 @@ test_no_summary_when_nothing_is_eligible() {
   assert_output_excludes "symlink 0"
 }
 
+test_script_is_inert_when_sourced() {
+  # shellcheck disable=SC2016 # The nested Bash process expands this script.
+  OUTPUT=$("$PLUGIN_BASH" -c '
+    plugin=$1
+    set +u
+    set +o pipefail
+    before_flags=$-
+    before_directory=$PWD
+    set -- first second
+    trap ":" TERM
+    before_trap=$(trap -p TERM)
+
+    source "$plugin"
+
+    [[ $- == "$before_flags" ]] || exit 11
+    [[ $PWD == "$before_directory" ]] || exit 12
+    [[ $1 == first && $2 == second ]] || exit 13
+    [[ $(trap -p TERM) == "$before_trap" ]] || exit 14
+    declare -F _worktree_include_select_eligible_leaf_entries >/dev/null || exit 15
+    printf reached
+  ' "$PLUGIN" "$PLUGIN" 2>&1)
+  STATUS=$?
+
+  [[ $STATUS -eq 0 ]] || fail "sourcing check exited $STATUS: $OUTPUT"
+  [[ $OUTPUT == reached ]] || fail "unexpected sourcing output: $OUTPUT"
+}
+
+test_selection_failure_clears_output() {
+  local not_repo=$TEST_ROOT/not-a-repository diagnostics=$TEST_ROOT/selection.stderr
+  local selection_tmp=$TEST_ROOT/selection-tmp
+  local -a actual=(stale)
+  mkdir "$not_repo" "$selection_tmp"
+  printf 'local.env\n' >"$not_repo/.worktreeinclude"
+  printf 'secret\n' >"$not_repo/local.env"
+
+  if TMPDIR=$selection_tmp _worktree_include_select_eligible_leaf_entries \
+    "$not_repo" "$WORKTREE" actual 2>"$diagnostics"; then
+    fail "expected selection failure"
+    return 1
+  fi
+
+  [[ ${#actual[@]} -eq 0 ]] || fail "selection failure retained partial output"
+  local -a leftovers=("$selection_tmp"/herdr-worktree-include.*)
+  [[ ! -e ${leftovers[0]} ]] || fail "selection failure leaked temporary storage"
+  OUTPUT=$(<"$diagnostics")
+  assert_output_contains "could not inspect ignored files"
+}
+
+test_selection_output_name_does_not_collide() {
+  local -a complete_result=(stale)
+  printf '.env\n' >"$REPO/.worktreeinclude"
+  printf 'secret\n' >"$REPO/.env"
+  ignore_locally '.env'
+
+  _worktree_include_select_eligible_leaf_entries \
+    "$REPO" "$WORKTREE" complete_result || return 1
+
+  [[ ${#complete_result[@]} -eq 1 ]] || fail "expected one Eligible leaf entry"
+  [[ ${complete_result[0]} == .env ]] || fail "unexpected entry: ${complete_result[0]}"
+}
+
 for dependency in git jq bash cp mktemp readlink mkfifo; do
   if ! command -v "$dependency" >/dev/null 2>&1; then
     printf 'missing test dependency: %s\n' "$dependency" >&2
@@ -487,6 +578,7 @@ for dependency in git jq bash cp mktemp readlink mkfifo; do
   fi
 done
 
+run_test "script is inert when sourced" test_script_is_inert_when_sourced
 run_test "nested leaves with tracked siblings" test_nested_leaf_with_tracked_siblings
 run_test "copy mode preserves leaf symlinks" test_copy_mode_copies_files_and_preserves_symlinks
 run_test "copy failure preserves partial destination" test_copy_failure_preserves_partial_destination
@@ -512,6 +604,8 @@ run_test "obsolete include_file config aborts run" test_obsolete_include_file_co
 run_test "missing include file is a quiet noop" test_missing_include_file_is_a_quiet_noop
 run_test "nonregular include file aborts run" test_nonregular_include_file_aborts_run
 run_test "empty eligible set has no summary" test_no_summary_when_nothing_is_eligible
+run_test "selection failure clears output" test_selection_failure_clears_output
+run_test "selection output names do not collide" test_selection_output_name_does_not_collide
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [[ $failed -eq 0 ]]
