@@ -79,7 +79,7 @@ The plugin warns about and ignores unsupported patterns. One `.worktreeinclude` 
 
 Here, `.env` means only the repository-root `.env`. It does not match `.env` in nested directories. Use the full repository-relative path for nested files.
 
-Missing declarations, entries that point to files that Git tracks, and declarations that Git does not ignore are omitted without a warning. Existing directories and special files produce a warning and are skipped.
+Missing declarations, declarations that Git does not ignore, and exact source paths already tracked in the main checkout are omitted without a warning. A destination-only tracked path or a declaration above or below a tracked path produces a warning. Existing directories and special files also produce a warning and are skipped.
 
 The plugin validates every declaration before installing anything. Selecting `.worktreeinclude` itself is allowed.
 
@@ -120,7 +120,7 @@ AND free of structural conflicts in both Git indexes
 
 It asks Git for ignored, untracked source leaves in one batch, then reads the main and destination worktree indexes once each immediately before installation.
 
-The plugin rejects an entry with a warning if either index contains:
+After Git omits exact source paths it already tracks, the plugin rejects a remaining entry with a warning if either index contains:
 
 - The exact path.
 - A tracked path below the declared leaf.
@@ -143,6 +143,8 @@ Run the integration suite:
 ```sh
 bash tests/integration.sh
 ```
+
+Selection tests source `src/include.sh` and exercise Eligible leaf entry selection through its internal module interface. Installation and event-handling tests execute the script through the same process interface Herdr uses.
 
 Run one group by setting `TEST_FILTER` to part of its name:
 

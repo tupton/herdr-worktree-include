@@ -9,7 +9,7 @@ A repository-relative literal path declared in `.worktreeinclude`. It identifies
 _Avoid_: Include pattern
 
 **Eligible leaf entry**:
-A declared leaf entry that standard Git ignore rules ignore and that Git does not track in either relevant checkout.
+A leaf entry named by an include declaration that standard Git ignore rules ignore. Its repository-relative path is not the same as, below, or above a path tracked in either the main checkout or the newly created worktree.
 _Avoid_: Selected path, eligible path
 
 **Leaf entry**:
