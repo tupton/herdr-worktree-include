@@ -266,16 +266,50 @@ _worktree_include_snapshot_conflict_kind() {
   return 1
 }
 
-_worktree_include_select_eligible_leaf_entries_impl() {
-  local source=$1 worktree=$2 include_file=$3
-  local source_ignore_case=false path conflict temp_dir='' cleanup_command
-  # shellcheck disable=SC2034 # The arrays are passed by name to private helpers.
-  local -a declarations=() matched=() leaves=() eligible=()
+# Prints the entries that are conflict-free in both checkout indexes. This
+# module owns the snapshot representation and tracked-path conflict policy.
+_worktree_include_filter_tracked_conflicts() {
+  local source=$1 worktree=$2 temp_dir=$3 path conflict
+  shift 3
   # shellcheck disable=SC2034 # The arrays are passed by name to private helpers.
   local -A source_tracked=() source_descendants=()
   # shellcheck disable=SC2034 # The arrays are passed by name to private helpers.
   local -A destination_tracked=() destination_descendants=()
-  local source_index_ignore_case=false destination_index_ignore_case=false
+  local source_ignore_case=false destination_ignore_case=false
+
+  (($#)) || return 0
+  _worktree_include_snapshot_index "$source" "$temp_dir/source-index" \
+    source_tracked source_descendants source_ignore_case || return 1
+  _worktree_include_snapshot_index "$worktree" "$temp_dir/destination-index" \
+    destination_tracked destination_descendants destination_ignore_case || return 1
+
+  for path in "$@"; do
+    _worktree_include_snapshot_conflict_kind "$path" source_tracked \
+      source_descendants "$source_ignore_case"
+    conflict=$?
+    if ((conflict == 0)); then
+      continue
+    elif ((conflict == 2)); then
+      _worktree_include_warn "tracked path conflict: $path"
+      continue
+    fi
+
+    _worktree_include_snapshot_conflict_kind "$path" destination_tracked \
+      destination_descendants "$destination_ignore_case"
+    conflict=$?
+    if ((conflict != 1)); then
+      _worktree_include_warn "tracked path conflict: $path"
+      continue
+    fi
+    printf '%s\n' "$path"
+  done
+}
+
+_worktree_include_select_eligible_leaf_entries_impl() {
+  local source=$1 worktree=$2 include_file=$3
+  local source_ignore_case=false temp_dir='' cleanup_command
+  # shellcheck disable=SC2034 # The arrays are passed by name to private helpers.
+  local -a declarations=() matched=() leaves=()
 
   temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/herdr-worktree-include.XXXXXX" 2>/dev/null)
   if [[ -z $temp_dir ]]; then
@@ -300,36 +334,8 @@ _worktree_include_select_eligible_leaf_entries_impl() {
   _worktree_include_validate_source_leaves "$source" matched leaves
   ((${#leaves[@]})) || return 0
 
-  _worktree_include_snapshot_index "$source" "$temp_dir/source-index" \
-    source_tracked source_descendants source_index_ignore_case || return 1
-  _worktree_include_snapshot_index "$worktree" "$temp_dir/destination-index" \
-    destination_tracked destination_descendants destination_index_ignore_case || return 1
-
-  for path in "${leaves[@]}"; do
-    _worktree_include_snapshot_conflict_kind "$path" source_tracked \
-      source_descendants "$source_index_ignore_case"
-    conflict=$?
-    if ((conflict == 0)); then
-      continue
-    elif ((conflict == 2)); then
-      _worktree_include_warn "tracked path conflict: $path"
-      continue
-    fi
-
-    _worktree_include_snapshot_conflict_kind "$path" destination_tracked \
-      destination_descendants "$destination_index_ignore_case"
-    conflict=$?
-    if ((conflict != 1)); then
-      _worktree_include_warn "tracked path conflict: $path"
-      continue
-    fi
-    eligible+=("$path")
-  done
-
-  if ((${#eligible[@]})); then
-    printf '%s\n' "${eligible[@]}"
-  fi
-  return 0
+  _worktree_include_filter_tracked_conflicts \
+    "$source" "$worktree" "$temp_dir" "${leaves[@]}"
 }
 
 _worktree_include_select_eligible_leaf_entries() {
