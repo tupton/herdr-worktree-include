@@ -34,7 +34,7 @@ When the running interpreter is older, warn and `exit 0` rather than failing. Ev
 
 CI asserts this: a job runs the plugin under `/bin/bash` on `macos-latest` and requires both exit 0 and the guard's message.
 
-The guard itself must stay parseable by old Bash. As it happens, the 5.x features used here (`mapfile`, `declare -A`) are runtime failures rather than parse errors in 3.2, so a guard at the top of the file is reached before anything else fails.
+The guard itself must stay parseable by old Bash. As it happens, the 5.x features used here (`mapfile`, `declare -A`) are runtime failures rather than parse errors in 3.2, so a version guard is used before anything else fails.
 
 ## Consequences
 
