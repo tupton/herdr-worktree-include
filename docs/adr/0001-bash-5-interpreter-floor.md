@@ -4,7 +4,7 @@ Date: 2026-09-05
 
 ## Status
 
-Accepted
+Accepted. ADR 0005 reverses the rejected "Re-exec under a newer Bash found on disk" alternative. Herdr now runs `src/launch.sh`, which finds Bash 5 before running `include.sh`.
 
 ## Context
 
@@ -38,11 +38,11 @@ The guard itself must stay parseable by old Bash. As it happens, the 5.x feature
 
 ## Consequences
 
-- A user on stock macOS Bash with no Homebrew Bash on PATH gets no files linked, and a warning saying why. Previously they got working behavior.
+- A user on stock macOS Bash with no Bash 5 installed gets no files linked, and a warning saying why. Previously they got working behavior. Since ADR 0005, a Bash 5 installed by a package manager no longer needs to be on `PATH`: the launcher finds it.
 - `array_contains` is deleted; deduplication becomes an associative-array lookup.
 - Phase functions can return lists via `mapfile -d ''`, so the script's data flow is explicit rather than passed through script-scope arrays.
 - `set -uo pipefail` becomes available. `set -e` is deliberately not adopted: it converts unanticipated failures into abrupt mid-run exits with no message and a possibly half-populated worktree, which is the opposite of this plugin's contract.
-- The requirement lives in three places — the runtime guard, the README, and this record. Only the guard is load-bearing; `herdr-plugin.toml` has no field for declaring an interpreter version.
+- The requirement lives in the README, in this record, and in two runtime checks: the guard in `include.sh` and, since ADR 0005, the launcher's search in `launch.sh`. Only the runtime checks are load-bearing; `herdr-plugin.toml` has no field for declaring an interpreter version.
 
 ## Alternatives considered
 

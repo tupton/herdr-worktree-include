@@ -22,7 +22,9 @@ jobs:
         run: shellcheck --version
 
       - name: Lint
-        run: shellcheck --shell=bash src/include.sh tests/integration.sh
+        run: |
+          shellcheck --shell=bash src/include.sh tests/integration.sh
+          shellcheck --shell=sh src/launch.sh
 
   test:
     strategy:
@@ -79,6 +81,35 @@ jobs:
             *"Bash 5 or newer is required"*) ;;
             *)
               echo "::error::expected the interpreter guard warning"
+              exit 1
+              ;;
+          esac
+
+      - name: Install Bash
+        run: brew list bash >/dev/null 2>&1 || brew install bash
+
+      # A launchd-started Herdr server has this PATH, where `bash` is Bash 3.2.
+      - name: Launcher finds Bash 5 outside a minimal PATH
+        run: |
+          set +e
+          output=$(env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+            HERDR_PLUGIN_EVENT_JSON='{}' sh src/launch.sh 2>&1)
+          status=$?
+          set -e
+
+          printf 'exit=%s\n' "$status"
+          printf '%s\n' "$output"
+
+          if [ "$status" -ne 0 ]; then
+            echo "::error::expected exit 0, got $status"
+            exit 1
+          fi
+
+          # Either message means include.sh passed its Bash 5 guard.
+          case "$output" in
+            *"no valid worktree path in event"* | *"jq not found"*) ;;
+            *)
+              echo "::error::expected include.sh to run under Bash 5"
               exit 1
               ;;
           esac

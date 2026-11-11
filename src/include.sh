@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Herdr worktree.created handler. Symlinks or copies declared leaf entries from
-# a repository's main checkout into a newly created worktree.
+# a repository's main checkout into a newly created worktree. Herdr runs this
+# through launch.sh, which finds a Bash 5 interpreter.
 
 _worktree_include_warn() {
   printf 'worktree-include: %s\n' "$1" >&2
