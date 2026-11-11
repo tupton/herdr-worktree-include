@@ -4,6 +4,7 @@ set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PLUGIN=$ROOT/src/include.sh
+LAUNCHER=$ROOT/src/launch.sh
 PLUGIN_BASH=${PLUGIN_BASH:-bash}
 TEST_ROOT=
 passed=0
@@ -634,7 +635,50 @@ test_selection_output_name_does_not_collide() {
   [[ ${complete_result[0]} == .env ]] || fail "unexpected entry: ${complete_result[0]}"
 }
 
-for dependency in git jq bash cp mktemp readlink mkfifo; do
+# Puts a stand-in for an older Bash first on PATH. It fails the launcher's
+# version check and reports a 3.2 version string.
+install_old_bash() {
+  OLD_BASH_DIR=$TEST_ROOT/old-bash
+  mkdir "$OLD_BASH_DIR" || return 1
+  cat >"$OLD_BASH_DIR/bash" <<'EOF'
+#!/bin/sh
+case $2 in
+  *BASH_VERSINFO*) exit 1 ;;
+  *) printf '3.2.57(1)-release' ;;
+esac
+EOF
+  chmod +x "$OLD_BASH_DIR/bash"
+}
+
+test_launcher_skips_older_bash_earlier_on_path() {
+  printf '.env\n' >"$REPO/.worktreeinclude"
+  printf 'secret\n' >"$REPO/.env"
+  ignore_locally '.env'
+  install_old_bash || return 1
+
+  OUTPUT=$(PATH="$OLD_BASH_DIR:$PATH" HERDR_PLUGIN_EVENT_JSON="$EVENT_JSON" \
+    sh "$LAUNCHER" 2>&1)
+  STATUS=$?
+
+  [[ $STATUS -eq 0 ]] || fail "launcher exited $STATUS: $OUTPUT"
+  assert_output_excludes "Bash 5 or newer is required" || return 1
+  assert_symlink "$WORKTREE/.env" || return 1
+  assert_output_contains "symlink 1, skipped 0"
+}
+
+test_launcher_resolves_include_script_from_relative_path() {
+  printf '.env\n' >"$REPO/.worktreeinclude"
+  printf 'secret\n' >"$REPO/.env"
+  ignore_locally '.env'
+
+  OUTPUT=$(cd "$ROOT" && HERDR_PLUGIN_EVENT_JSON="$EVENT_JSON" sh src/launch.sh 2>&1)
+  STATUS=$?
+
+  [[ $STATUS -eq 0 ]] || fail "launcher exited $STATUS: $OUTPUT"
+  assert_symlink "$WORKTREE/.env"
+}
+
+for dependency in git jq bash sh cp mktemp readlink mkfifo; do
   if ! command -v "$dependency" >/dev/null 2>&1; then
     printf 'missing test dependency: %s\n' "$dependency" >&2
     exit 1
@@ -670,6 +714,8 @@ run_test "nonregular include file aborts run" test_nonregular_include_file_abort
 run_test "empty eligible set has no summary" test_no_summary_when_nothing_is_eligible
 run_test "selection failure clears output" test_selection_failure_clears_output
 run_test "selection output names do not collide" test_selection_output_name_does_not_collide
+run_test "launcher skips older Bash earlier on PATH" test_launcher_skips_older_bash_earlier_on_path
+run_test "launcher resolves include script from a relative path" test_launcher_resolves_include_script_from_relative_path
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [[ $failed -eq 0 ]]

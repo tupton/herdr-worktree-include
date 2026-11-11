@@ -7,4 +7,4 @@ platforms = ["linux", "macos"]
 
 [[events]]
 on = "worktree.created"
-command = ["bash", "src/include.sh"]
+command = ["sh", "src/launch.sh"]

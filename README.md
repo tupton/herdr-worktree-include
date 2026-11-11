@@ -10,7 +10,9 @@
 - Git
 - `jq`
 
-macOS includes Bash 3.2. Install a current version with `brew install bash` and put it before `/bin/bash` on `PATH`.
+macOS includes Bash 3.2. Install a current version with `brew install bash`.
+
+Herdr starts the plugin through `src/launch.sh`, a POSIX `sh` launcher that finds Bash 5 even when the Herdr server has a minimal `PATH`. This happens when launchd starts the server, for example through `brew services`. The launcher checks each `bash` on `PATH` in order, then the package manager directories listed as `fallback_dirs` in [`src/launch.sh`](src/launch.sh). If it finds no Bash 5, it prints a warning and exits without changing the worktree.
 
 ## Installation
 
@@ -144,7 +146,7 @@ Run the integration suite:
 bash tests/integration.sh
 ```
 
-Selection and tracked-conflict policy tests source `src/include.sh` and exercise their respective internal module interfaces. Installation and event-handling tests execute the script through the same process interface Herdr uses.
+Selection and tracked-conflict policy tests source `src/include.sh` and exercise their respective internal module interfaces. Installation and event-handling tests execute `src/include.sh` with the event environment Herdr provides. Launcher tests run `src/launch.sh` under `sh`, as Herdr does.
 
 Run one group by setting `TEST_FILTER` to part of its name:
 
@@ -156,6 +158,7 @@ Run static checks with [ShellCheck](https://www.shellcheck.net/):
 
 ```sh
 shellcheck --shell=bash src/include.sh tests/integration.sh
+shellcheck --shell=sh src/launch.sh
 ```
 
 ## Attribution
